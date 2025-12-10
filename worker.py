@@ -4,6 +4,7 @@
 Photoye - 后台任务管理模块
 负责处理所有耗时操作，避免UI线程阻塞
 
+版本: 1.0 (阶段3)
 """
 
 import os
@@ -11,7 +12,8 @@ import time
 from pathlib import Path
 from typing import List, Callable, Optional
 from PyQt6.QtCore import QThread, pyqtSignal
-from database import add_photo, is_photo_exist
+from database import add_photo, is_photo_exist, update_photo_status, add_face_data
+from analyzer import AIAnalyzer
 
 
 class ScanWorker(QThread):
@@ -20,6 +22,7 @@ class ScanWorker(QThread):
     
     在阶段0中，这是一个占位类，用于验证多线程架构
     实际的文件扫描功能将在阶段1中实现
+    阶段3中增加了AI分析功能
     """
     
     # 定义信号
@@ -45,6 +48,10 @@ class ScanWorker(QThread):
         self.is_running = False
         self.should_stop = False
         
+        # 初始化AI分析器
+        self.ai_analyzer = AIAnalyzer()
+        
+        print(f"扫描工作线程初始化")
         print(f"根目录: {root_path}")
         print(f"支持格式: {self.supported_extensions}")
     
@@ -62,17 +69,17 @@ class ScanWorker(QThread):
                 self.error_occurred.emit(f"目录不存在: {self.root_path}")
                 return
             
-            # 实际实现 - 扫描目录中的图片文件
-            self._scan_directory()
+            # 扫描并分析目录中的图片文件
+            self._scan_and_analyze_directory()
             
         except Exception as e:
             self.error_occurred.emit(f"扫描过程中发生错误: {str(e)}")
         finally:
             self.is_running = False
     
-    def _scan_directory(self):
+    def _scan_and_analyze_directory(self):
         """
-        扫描目录中的图片文件
+        扫描并分析目录中的图片文件
         """
         # 收集所有支持的图片文件
         image_files = []
@@ -104,6 +111,9 @@ class ScanWorker(QThread):
                 photo_id = add_photo(file_path)
                 if photo_id is not None:
                     self.file_found.emit(file_path)
+                    
+                    # 对新文件进行AI分析
+                    self._analyze_photo(photo_id, file_path)
             else:
                 print(f"文件已存在数据库中: {file_path}")
                 
@@ -115,6 +125,44 @@ class ScanWorker(QThread):
         # 发送完成信号
         if not self.should_stop:
             self.scan_completed.emit(processed_files)
+    
+    def _analyze_photo(self, photo_id: int, file_path: str):
+        """
+        分析单张照片并存储结果
+        
+        Args:
+            photo_id: 照片在数据库中的ID
+            file_path: 照片文件路径
+        """
+        try:
+            print(f"开始分析照片: {file_path}")
+            
+            # 更新照片状态为处理中
+            update_photo_status(photo_id, 'processing')
+            
+            # 使用AI分析器分析照片
+            result = self.ai_analyzer.analyze_photo(file_path)
+            
+            if result is not None:
+                # 存储人脸数据
+                for face in result['faces']:
+                    bbox = face['bbox']
+                    embedding = face['embedding']
+                    confidence = face['confidence']
+                    add_face_data(photo_id, bbox, embedding, confidence)
+                
+                # 更新照片状态为完成，并设置分类
+                update_photo_status(photo_id, 'done', result['category'])
+                print(f"照片分析完成: {file_path}, 分类: {result['category']}")
+            else:
+                # 如果分析失败，更新状态为待处理
+                update_photo_status(photo_id, 'pending')
+                print(f"照片分析失败: {file_path}")
+                
+        except Exception as e:
+            # 如果分析过程中出现异常，更新状态为待处理
+            update_photo_status(photo_id, 'pending')
+            print(f"照片分析异常: {file_path}, 错误: {e}")
     
     def stop_scan(self):
         """

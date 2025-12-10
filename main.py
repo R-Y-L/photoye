@@ -4,17 +4,18 @@
 Photoye - 本地智能照片管理助手
 主程序入口和用户界面
 
-版本: 1.0
-日期: 2025年08月14日
+版本: 1.0 (阶段4)
 """
 
 import sys
 import os
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, 
-                             QWidget, QMenuBar, QStatusBar, QLabel, QSplitter, QFileDialog)
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QAction, QIcon
-from database import init_db
+                             QWidget, QMenuBar, QStatusBar, QLabel, QSplitter, 
+                             QFileDialog, QListWidget, QListWidgetItem, QPushButton,
+                             QButtonGroup, QGroupBox, QGridLayout, QLineEdit, QComboBox)
+from PyQt6.QtCore import Qt, QSize
+from PyQt6.QtGui import QAction, QIcon, QPixmap, QImage
+from database import init_db, get_all_photos, get_faces_by_photo_id
 from worker import ScanWorker
 
 
@@ -24,8 +25,11 @@ class PhotoyeMainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.scan_worker = None
+        self.current_filter = None
+        self.current_library_path = None
         self.init_ui()
         self.init_database()
+        self.load_photos()
     
     def init_ui(self):
         """初始化用户界面"""
@@ -89,17 +93,58 @@ class PhotoyeMainWindow(QMainWindow):
         """)
         layout.addWidget(nav_title)
         
-        # 占位标签
-        placeholder_label = QLabel("功能区域待开发\n\n将在后续阶段实现:\n• 视图切换\n• 人物列表\n• 分类筛选\n• 标签管理")
-        placeholder_label.setStyleSheet("""
+        # 当前库信息
+        library_info_group = QGroupBox("当前照片库")
+        library_info_layout = QVBoxLayout(library_info_group)
+        
+        self.library_path_label = QLabel("未选择照片库")
+        self.library_path_label.setWordWrap(True)
+        self.library_path_label.setStyleSheet("""
             QLabel {
-                color: #666;
-                padding: 20px;
-                text-align: center;
+                padding: 5px;
+                background-color: #fff;
+                border: 1px solid #ddd;
+                border-radius: 4px;
             }
         """)
-        placeholder_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(placeholder_label)
+        library_info_layout.addWidget(self.library_path_label)
+        
+        # 添加选择照片库按钮
+        select_library_btn = QPushButton("选择照片库")
+        select_library_btn.clicked.connect(self.select_library)
+        library_info_layout.addWidget(select_library_btn)
+        
+        layout.addWidget(library_info_group)
+        
+        # 筛选器区域
+        filter_group = QGroupBox("筛选器")
+        filter_layout = QVBoxLayout(filter_group)
+        
+        # 全部照片按钮
+        all_photos_btn = QPushButton("全部照片")
+        all_photos_btn.clicked.connect(lambda: self.filter_photos(None))
+        filter_layout.addWidget(all_photos_btn)
+        
+        # 分类筛选按钮
+        categories = ["单人照", "合照", "风景", "建筑", "动物", "室内", "美食", "文档"]
+        for category in categories:
+            btn = QPushButton(category)
+            btn.clicked.connect(lambda checked, c=category: self.filter_photos(c))
+            filter_layout.addWidget(btn)
+        
+        layout.addWidget(filter_group)
+        
+        # 统计信息
+        self.stats_label = QLabel("照片总数: 0\n已分析: 0\n待处理: 0")
+        self.stats_label.setStyleSheet("""
+            QLabel {
+                padding: 10px;
+                background-color: #fff;
+                border: 1px solid #ddd;
+                border-radius: 4px;
+            }
+        """)
+        layout.addWidget(self.stats_label)
         
         layout.addStretch()
         
@@ -116,7 +161,9 @@ class PhotoyeMainWindow(QMainWindow):
         
         layout = QVBoxLayout(display_widget)
         
-        # 展示区标题
+        # 展示区标题和工具栏
+        header_layout = QHBoxLayout()
+        
         display_title = QLabel("照片展示区")
         display_title.setStyleSheet("""
             QLabel {
@@ -127,19 +174,23 @@ class PhotoyeMainWindow(QMainWindow):
                 border-bottom: 1px solid #ddd;
             }
         """)
-        layout.addWidget(display_title)
+        header_layout.addWidget(display_title)
         
-        # 占位标签
-        placeholder_label = QLabel("照片展示功能待开发\n\n将在后续阶段实现:\n• 缩略图网格展示\n• 无限滚动加载\n• 详细信息查看\n• 双击高清预览")
-        placeholder_label.setStyleSheet("""
-            QLabel {
-                color: #666;
-                font-size: 14px;
-                text-align: center;
-            }
-        """)
-        placeholder_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(placeholder_label)
+        # 刷新按钮
+        refresh_btn = QPushButton("刷新")
+        refresh_btn.clicked.connect(self.refresh_photos)
+        header_layout.addWidget(refresh_btn)
+        
+        layout.addLayout(header_layout)
+        
+        # 照片列表
+        self.photo_list = QListWidget()
+        self.photo_list.setViewMode(QListWidget.ViewMode.IconMode)
+        self.photo_list.setIconSize(QSize(150, 150))
+        self.photo_list.setResizeMode(QListWidget.ResizeMode.Adjust)
+        self.photo_list.setMovement(QListWidget.Movement.Static)
+        self.photo_list.setSpacing(10)
+        layout.addWidget(self.photo_list)
         
         return display_widget
     
@@ -224,6 +275,92 @@ class PhotoyeMainWindow(QMainWindow):
             self.status_bar.showMessage(f"数据库初始化失败: {str(e)}", 5000)
             print(f"数据库初始化错误: {e}")
     
+    def load_photos(self, category=None):
+        """加载照片到界面"""
+        # 获取照片数据
+        if self.current_library_path:
+            # 如果指定了当前库路径，则只加载该路径下的照片
+            all_photos = get_all_photos(category=category)
+            photos = [photo for photo in all_photos 
+                     if os.path.dirname(photo['filepath']) == self.current_library_path]
+        else:
+            photos = get_all_photos(category=category)
+        
+        # 清空当前列表
+        self.photo_list.clear()
+        
+        # 添加照片到列表
+        for photo in photos:
+            item = QListWidgetItem()
+            item.setText(os.path.basename(photo['filepath']))
+            
+            # 创建缩略图
+            pixmap = self.create_thumbnail(photo['filepath'])
+            if pixmap:
+                item.setIcon(QIcon(pixmap))
+            else:
+                # 如果无法创建缩略图，使用颜色占位符
+                placeholder = QPixmap(150, 150)
+                if photo['category'] == '风景':
+                    placeholder.fill(Qt.GlobalColor.blue)
+                elif photo['category'] == '单人照':
+                    placeholder.fill(Qt.GlobalColor.magenta)
+                elif photo['category'] == '合照':
+                    placeholder.fill(Qt.GlobalColor.yellow)
+                else:
+                    placeholder.fill(Qt.GlobalColor.gray)
+                item.setIcon(QIcon(placeholder))
+                
+            item.setData(Qt.ItemDataRole.UserRole, photo)  # 存储照片数据
+            self.photo_list.addItem(item)
+        
+        # 更新统计信息
+        self.update_stats()
+    
+    def create_thumbnail(self, image_path):
+        """创建照片缩略图"""
+        try:
+            if not os.path.exists(image_path):
+                return None
+                
+            # 尝试创建真实的缩略图
+            image = QImage(image_path)
+            if image.isNull():
+                return None
+                
+            # 缩放到合适尺寸
+            thumbnail = image.scaled(150, 150, Qt.AspectRatioMode.KeepAspectRatio, 
+                                   Qt.TransformationMode.SmoothTransformation)
+            return QPixmap.fromImage(thumbnail)
+        except Exception as e:
+            print(f"创建缩略图失败: {e}")
+            return None
+    
+    def update_stats(self):
+        """更新统计信息"""
+        from database import get_photos_count
+        stats = get_photos_count()
+        
+        stats_text = f"照片总数: {stats.get('total', 0)}\n"
+        stats_text += f"已分析: {stats.get('status', {}).get('done', 0)}\n"
+        stats_text += f"待处理: {stats.get('status', {}).get('pending', 0)}"
+        
+        self.stats_label.setText(stats_text)
+    
+    def filter_photos(self, category):
+        """根据分类筛选照片"""
+        self.current_filter = category
+        self.load_photos(category)
+        if category:
+            self.status_bar.showMessage(f"筛选: {category}", 3000)
+        else:
+            self.status_bar.showMessage("显示全部照片", 3000)
+    
+    def refresh_photos(self):
+        """刷新照片显示"""
+        self.load_photos(self.current_filter)
+        self.status_bar.showMessage("照片列表已刷新", 3000)
+    
     def select_library(self):
         """选择照片库"""
         # 打开目录选择对话框
@@ -235,11 +372,17 @@ class PhotoyeMainWindow(QMainWindow):
         )
         
         if directory:
+            self.current_library_path = directory
+            self.library_path_label.setText(directory)
             self.status_bar.showMessage(f"开始扫描目录: {directory}", 3000)
             self.start_scan(directory)
     
     def start_scan(self, directory):
         """开始扫描指定目录"""
+        # 更新当前库路径
+        self.current_library_path = directory
+        self.library_path_label.setText(directory)
+        
         # 创建并启动扫描工作线程
         self.scan_worker = ScanWorker(directory)
         
@@ -267,6 +410,8 @@ class PhotoyeMainWindow(QMainWindow):
         """处理扫描完成"""
         self.status_bar.showMessage(f"扫描完成，共处理 {total_files} 个文件", 5000)
         self.scan_worker = None
+        # 重新加载照片
+        self.load_photos(self.current_filter)
     
     def on_scan_error(self, error_msg):
         """处理扫描错误"""
@@ -274,25 +419,35 @@ class PhotoyeMainWindow(QMainWindow):
         self.scan_worker = None
     
     def switch_to_gallery(self):
-        """切换到图库视图(占位函数)"""
-        self.status_bar.showMessage("图库视图功能将在阶段4实现", 3000)
+        """切换到图库视图"""
+        self.status_bar.showMessage("已切换到图库视图", 3000)
     
     def switch_to_people(self):
         """切换到人物视图(占位函数)"""
         self.status_bar.showMessage("人物视图功能将在阶段5实现", 3000)
     
     def show_db_info(self):
-        """显示数据库信息(占位函数)"""
-        self.status_bar.showMessage("数据库信息功能待实现", 3000)
+        """显示数据库信息"""
+        from database import get_photos_count
+        stats = get_photos_count()
+        
+        info_text = "数据库信息:\n"
+        info_text += f"照片总数: {stats.get('total', 0)}\n"
+        info_text += f"已分析: {stats.get('status', {}).get('done', 0)}\n"
+        info_text += f"待处理: {stats.get('status', {}).get('pending', 0)}\n"
+        info_text += f"人脸数量: {stats.get('faces', 0)}\n"
+        info_text += f"人物数量: {stats.get('persons', 0)}\n"
+        
+        self.status_bar.showMessage(info_text, 5000)
     
     def show_about(self):
-        """显示关于信息(占位函数)"""
+        """显示关于信息"""
         from PyQt6.QtWidgets import QMessageBox
         
         QMessageBox.about(self, "关于 Photoye", 
             """
             <h3>Photoye - 本地智能照片管理助手</h3>
-            <p><b>版本:</b> 1.0 (阶段1)</p>
+            <p><b>版本:</b> 1.0 (阶段4)</p>
             <p><b>日期:</b> 2025年08月14日</p>
             <br>
             <p>一款以隐私保护为核心、运行于本地的、智能化的照片与视频管理工具。</p>

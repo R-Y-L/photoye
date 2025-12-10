@@ -4,12 +4,14 @@
 Photoye - 数据库交互模块
 负责与 SQLite 数据库进行所有交互，提供标准化的数据读写接口
 
+版本: 1.0 (阶段3)
 """
 
 import sqlite3
 import os
 from typing import List, Dict, Optional, Tuple
 from pathlib import Path
+import numpy as np
 
 
 # 数据库文件名
@@ -323,6 +325,92 @@ def get_photos_count() -> Dict[str, int]:
     except sqlite3.Error as e:
         print(f"获取统计信息失败: {e}")
         return {}
+    finally:
+        conn.close()
+
+
+def add_face_data(photo_id: int, bbox: List[int], embedding: np.ndarray, confidence: float = 0.0) -> Optional[int]:
+    """
+    添加人脸数据到数据库
+    
+    Args:
+        photo_id: 照片ID
+        bbox: 人脸边界框坐标 [x1, y1, x2, y2]
+        embedding: 512维人脸特征向量
+        confidence: 检测置信度
+    
+    Returns:
+        新插入记录的ID，如果插入失败返回None
+    """
+    conn = get_connection()
+    
+    try:
+        cursor = conn.cursor()
+        
+        # 将bbox转换为JSON字符串
+        import json
+        bbox_json = json.dumps(bbox)
+        
+        # 将numpy数组转换为bytes
+        embedding_blob = embedding.tobytes()
+        
+        cursor.execute("""
+            INSERT INTO faces (photo_id, bbox, embedding, confidence)
+            VALUES (?, ?, ?, ?)
+        """, (photo_id, bbox_json, embedding_blob, confidence))
+        
+        conn.commit()
+        face_id = cursor.lastrowid
+        print(f"添加人脸记录: ID={face_id}, PhotoID={photo_id}")
+        return face_id
+        
+    except sqlite3.Error as e:
+        print(f"添加人脸记录失败: {e}")
+        conn.rollback()
+        return None
+    finally:
+        conn.close()
+
+
+def get_faces_by_photo_id(photo_id: int) -> List[Dict]:
+    """
+    根据照片ID获取所有人脸数据
+    
+    Args:
+        photo_id: 照片ID
+    
+    Returns:
+        人脸记录列表，每个记录是一个字典
+    """
+    conn = get_connection()
+    
+    try:
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT id, photo_id, person_id, bbox, embedding, confidence
+            FROM faces 
+            WHERE photo_id = ?
+            ORDER BY id
+        """, (photo_id,))
+        
+        rows = cursor.fetchall()
+        faces = []
+        
+        import json
+        for row in rows:
+            face = dict(row)
+            # 将bbox JSON字符串转回列表
+            face['bbox'] = json.loads(face['bbox'])
+            # 将embedding blob转回numpy数组
+            face['embedding'] = np.frombuffer(face['embedding'], dtype=np.float32)
+            faces.append(face)
+        
+        return faces
+        
+    except sqlite3.Error as e:
+        print(f"获取人脸数据失败: {e}")
+        return []
     finally:
         conn.close()
 
