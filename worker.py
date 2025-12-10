@@ -4,8 +4,6 @@
 Photoye - 后台任务管理模块
 负责处理所有耗时操作，避免UI线程阻塞
 
-版本: 1.0
-日期: 2025年08月14日
 """
 
 import os
@@ -13,6 +11,7 @@ import time
 from pathlib import Path
 from typing import List, Callable, Optional
 from PyQt6.QtCore import QThread, pyqtSignal
+from database import add_photo, is_photo_exist
 
 
 class ScanWorker(QThread):
@@ -46,7 +45,6 @@ class ScanWorker(QThread):
         self.is_running = False
         self.should_stop = False
         
-        print(f"[占位] 扫描工作线程初始化")
         print(f"根目录: {root_path}")
         print(f"支持格式: {self.supported_extensions}")
     
@@ -58,62 +56,71 @@ class ScanWorker(QThread):
         self.should_stop = False
         
         try:
-            print(f"[占位] 开始扫描目录: {self.root_path}")
+            print(f"开始扫描目录: {self.root_path}")
             
             if not os.path.exists(self.root_path):
                 self.error_occurred.emit(f"目录不存在: {self.root_path}")
                 return
             
-            # 在实际实现中，这里会:
-            # 1. 递归遍历目录
-            # 2. 筛选支持的图片格式
-            # 3. 检查文件是否已在数据库中
-            # 4. 发送进度更新信号
-            
-            # 占位实现 - 模拟扫描过程
-            self._simulate_scan()
+            # 实际实现 - 扫描目录中的图片文件
+            self._scan_directory()
             
         except Exception as e:
             self.error_occurred.emit(f"扫描过程中发生错误: {str(e)}")
         finally:
             self.is_running = False
     
-    def _simulate_scan(self):
+    def _scan_directory(self):
         """
-        模拟扫描过程 (占位函数)
+        扫描目录中的图片文件
         """
-        # 模拟发现一些文件
-        mock_files = [
-            "photo1.jpg", "photo2.png", "photo3.jpeg",
-            "vacation/beach1.jpg", "vacation/beach2.jpg",
-            "family/portrait1.png", "family/portrait2.jpg"
-        ]
-        
-        total_files = len(mock_files)
-        
-        for i, filename in enumerate(mock_files):
+        # 收集所有支持的图片文件
+        image_files = []
+        for root, dirs, files in os.walk(self.root_path):
             if self.should_stop:
                 break
-            
-            # 模拟处理时间
-            time.sleep(0.2)
-            
-            # 发送文件发现信号
-            full_path = os.path.join(self.root_path, filename)
-            self.file_found.emit(full_path)
+            for file in files:
+                # 检查文件扩展名
+                if any(file.lower().endswith(ext) for ext in self.supported_extensions):
+                    full_path = os.path.join(root, file)
+                    image_files.append(full_path)
+        
+        if self.should_stop:
+            return
+        
+        total_files = len(image_files)
+        processed_files = 0
+        
+        print(f"发现 {total_files} 个图片文件")
+        
+        # 处理每个图片文件
+        for i, file_path in enumerate(image_files):
+            if self.should_stop:
+                break
+                
+            # 检查文件是否已在数据库中
+            if not is_photo_exist(file_path):
+                # 添加到数据库
+                photo_id = add_photo(file_path)
+                if photo_id is not None:
+                    self.file_found.emit(file_path)
+            else:
+                print(f"文件已存在数据库中: {file_path}")
+                
+            processed_files += 1
             
             # 发送进度更新信号
-            self.progress_updated.emit(i + 1, total_files)
+            self.progress_updated.emit(processed_files, total_files)
         
         # 发送完成信号
         if not self.should_stop:
-            self.scan_completed.emit(total_files)
+            self.scan_completed.emit(processed_files)
     
     def stop_scan(self):
         """
         停止扫描
         """
-        print("[占位] 请求停止扫描")
+        print("请求停止扫描")
         self.should_stop = True
 
 

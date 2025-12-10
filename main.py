@@ -9,11 +9,13 @@ Photoye - 本地智能照片管理助手
 """
 
 import sys
+import os
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, 
-                             QWidget, QMenuBar, QStatusBar, QLabel, QSplitter)
+                             QWidget, QMenuBar, QStatusBar, QLabel, QSplitter, QFileDialog)
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QAction, QIcon
 from database import init_db
+from worker import ScanWorker
 
 
 class PhotoyeMainWindow(QMainWindow):
@@ -21,6 +23,7 @@ class PhotoyeMainWindow(QMainWindow):
     
     def __init__(self):
         super().__init__()
+        self.scan_worker = None
         self.init_ui()
         self.init_database()
     
@@ -222,8 +225,53 @@ class PhotoyeMainWindow(QMainWindow):
             print(f"数据库初始化错误: {e}")
     
     def select_library(self):
-        """选择照片库(占位函数)"""
-        self.status_bar.showMessage("选择照片库功能将在阶段1实现", 3000)
+        """选择照片库"""
+        # 打开目录选择对话框
+        directory = QFileDialog.getExistingDirectory(
+            self, 
+            "选择照片库目录", 
+            "", 
+            QFileDialog.Option.ShowDirsOnly | QFileDialog.Option.DontResolveSymlinks
+        )
+        
+        if directory:
+            self.status_bar.showMessage(f"开始扫描目录: {directory}", 3000)
+            self.start_scan(directory)
+    
+    def start_scan(self, directory):
+        """开始扫描指定目录"""
+        # 创建并启动扫描工作线程
+        self.scan_worker = ScanWorker(directory)
+        
+        # 连接信号
+        self.scan_worker.progress_updated.connect(self.on_scan_progress)
+        self.scan_worker.file_found.connect(self.on_file_found)
+        self.scan_worker.scan_completed.connect(self.on_scan_completed)
+        self.scan_worker.error_occurred.connect(self.on_scan_error)
+        
+        # 启动线程
+        self.scan_worker.start()
+        
+        self.status_bar.showMessage("正在扫描文件...")
+    
+    def on_scan_progress(self, current, total):
+        """处理扫描进度更新"""
+        self.status_bar.showMessage(f"已扫描 {current}/{total} 个文件")
+    
+    def on_file_found(self, filepath):
+        """处理发现新文件"""
+        filename = os.path.basename(filepath)
+        print(f"发现新文件: {filename}")
+    
+    def on_scan_completed(self, total_files):
+        """处理扫描完成"""
+        self.status_bar.showMessage(f"扫描完成，共处理 {total_files} 个文件", 5000)
+        self.scan_worker = None
+    
+    def on_scan_error(self, error_msg):
+        """处理扫描错误"""
+        self.status_bar.showMessage(f"扫描错误: {error_msg}", 5000)
+        self.scan_worker = None
     
     def switch_to_gallery(self):
         """切换到图库视图(占位函数)"""
@@ -244,7 +292,7 @@ class PhotoyeMainWindow(QMainWindow):
         QMessageBox.about(self, "关于 Photoye", 
             """
             <h3>Photoye - 本地智能照片管理助手</h3>
-            <p><b>版本:</b> 1.0 (阶段0)</p>
+            <p><b>版本:</b> 1.0 (阶段1)</p>
             <p><b>日期:</b> 2025年08月14日</p>
             <br>
             <p>一款以隐私保护为核心、运行于本地的、智能化的照片与视频管理工具。</p>
