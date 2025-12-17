@@ -4,64 +4,106 @@
 Photoye - OpenCV YuNet人脸检测模型适配器
 """
 
-import numpy as np
+from __future__ import annotations
+
 import random
-from typing import List, Dict
+from pathlib import Path
+from typing import Dict, List
+
+import numpy as np
+
 from .model_interfaces import FaceDetector
+
+MODEL_DIR = Path(__file__).resolve().parent / "models"
 
 
 class OpenCVYuNetDetector(FaceDetector):
     """OpenCV YuNet人脸检测模型适配器"""
-    
-    def __init__(self, model_path=None):
-        """
-        初始化OpenCV YuNet人脸检测模型
-        
-        Args:
-            model_path: 模型文件路径（当前为占位符）
-        """
-        # 当前为占位符实现，实际项目中会加载预训练的YuNet模型
-        print("初始化OpenCV YuNet人脸检测模型（占位符）")
-    
+
+    def __init__(self, model_path: str | None = None):
+        self.model_path = Path(model_path) if model_path else MODEL_DIR / "face_detection_yunet_2023mar.onnx"
+        self.detector = None
+
+        if not self.model_path.exists():
+            print(f"⚠️ 未找到 YuNet 模型，将尝试由 OpenCV 自动下载: {self.model_path}")
+        else:
+            print(f"✅ 使用 YuNet 模型: {self.model_path}")
+
+    def _ensure_detector(self, width: int, height: int):
+        import cv2
+
+        if self.detector is None:
+            self.detector = cv2.FaceDetectorYN_create(
+                model=str(self.model_path),
+                config="",
+                input_size=(width, height),
+                score_threshold=0.9,
+                nms_threshold=0.3,
+                top_k=5000,
+            )
+        else:
+            self.detector.setInputSize((width, height))
+
     def detect(self, image_path: str) -> List[Dict]:
-        """
-        检测图片中的人脸
-        
-        Args:
-            image_path: 图片文件路径
-        
-        Returns:
-            人脸检测结果列表，每个元素包含边界框和置信度
-        """
-        print(f"使用OpenCV YuNet检测人脸: {image_path}")
-        
+        print(f"使用 OpenCV YuNet 检测人脸: {image_path}")
+
         try:
-            # 检查文件是否存在
+            import cv2
             import os
+
             if not os.path.exists(image_path):
                 print(f"图片文件不存在: {image_path}")
                 return []
-            
-            # 在实际实现中，这里会:
-            # 1. 使用OpenCV读取图片
-            # 2. 预处理图片
-            # 3. 送入YuNet模型推理
-            # 4. 后处理检测结果
-            
-            # 当前使用模拟结果
-            # 模拟检测到0-3个人脸
-            num_faces = random.randint(0, 3)
-            mock_results = []
-            for i in range(num_faces):
-                mock_results.append({
-                    'bbox': [random.randint(50, 200), random.randint(50, 200), 
-                             random.randint(300, 500), random.randint(300, 500)],
-                    'confidence': random.uniform(0.7, 0.95)
-                })
-            
-            print(f"检测到 {num_faces} 个人脸")
-            return mock_results
-            
-        except Exception as e:
-            print(f"人脸检测出错: {e}")
-            return []
+
+            image = cv2.imread(image_path)
+            if image is None:
+                print(f"无法读取图片: {image_path}")
+                return []
+
+            h, w = image.shape[:2]
+            self._ensure_detector(w, h)
+
+            if self.detector is None:
+                return self._mock_detection()
+
+            faces = self.detector.detect(image)
+            results = []
+            if faces[1] is not None:
+                for face in faces[1]:
+                    x, y, bw, bh = face[0:4]
+                    landmarks = [
+                        [face[4], face[5]],
+                        [face[6], face[7]],
+                        [face[8], face[9]],
+                        [face[10], face[11]],
+                        [face[12], face[13]],
+                    ]
+                    confidence = face[-1]
+                    results.append({
+                        "bbox": [int(x), int(y), int(x + bw), int(y + bh)],
+                        "confidence": float(confidence),
+                        "landmarks": [[int(px), int(py)] for px, py in landmarks],
+                    })
+
+            print(f"检测到 {len(results)} 个人脸")
+            return results
+
+        except Exception as exc:  # noqa: BLE001
+            print(f"YuNet 人脸检测出错: {exc}")
+            return self._mock_detection()
+
+    @staticmethod
+    def _mock_detection() -> List[Dict]:
+        num_faces = random.randint(0, 3)
+        return [
+            {
+                "bbox": [
+                    random.randint(50, 200),
+                    random.randint(50, 200),
+                    random.randint(300, 500),
+                    random.randint(300, 500),
+                ],
+                "confidence": random.uniform(0.7, 0.95),
+            }
+            for _ in range(num_faces)
+        ]

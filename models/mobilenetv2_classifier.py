@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Photoye - MobileNetV3 场景分类模型适配器（真实推理版）
+Photoye - MobileNetV2 场景分类模型适配器（真实推理版）
 """
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Dict, List
 
@@ -19,11 +18,11 @@ from .model_interfaces import SceneClassifier
 MODEL_DIR = Path(__file__).resolve().parent / "models"
 
 
-class MobileNetV3SceneClassifier(SceneClassifier):
-    """使用 ONNX Runtime 运行 MobileNetV3-Large"""
+class MobileNetV2SceneClassifier(SceneClassifier):
+    """使用 ONNX Runtime 运行 MobileNetV2"""
 
     def __init__(self, model_path: str | None = None, class_file: str | None = None):
-        self.model_path = Path(model_path) if model_path else MODEL_DIR / "mobilenetv3-large-100.onnx"
+        self.model_path = Path(model_path) if model_path else MODEL_DIR / "image_classification_mobilenetv2_2022apr.onnx"
         self.class_file = Path(class_file) if class_file else MODEL_DIR / "imagenet_classes.txt"
         self.session = None
         self.labels: List[str] = []
@@ -48,13 +47,13 @@ class MobileNetV3SceneClassifier(SceneClassifier):
             import onnxruntime as ort
 
             if not self.model_path.exists():
-                print(f"⚠️ 未找到 MobileNetV3 模型: {self.model_path}")
+                print(f"⚠️ 未找到 MobileNetV2 模型: {self.model_path}")
                 return
 
             self.session = ort.InferenceSession(str(self.model_path), providers=["CPUExecutionProvider"])
-            print(f"✅ 加载 MobileNetV3 模型: {self.model_path}")
+            print(f"✅ 加载 MobileNetV2 模型: {self.model_path}")
         except Exception as exc:  # noqa: BLE001
-            print(f"⚠️ 加载 MobileNetV3 失败: {exc}")
+            print(f"⚠️ 加载 MobileNetV2 失败: {exc}")
             self.session = None
 
     def _preprocess(self, image_path: str) -> np.ndarray:
@@ -68,7 +67,7 @@ class MobileNetV3SceneClassifier(SceneClassifier):
         return np.expand_dims(img, axis=0)
 
     def classify(self, image_path: str) -> Dict[str, float]:
-        print(f"使用 MobileNetV3 进行场景分类: {image_path}")
+        print(f"使用 MobileNetV2 进行场景分类: {image_path}")
 
         try:
             import os

@@ -1,0 +1,35 @@
+# Byte-compiled / cache files
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environments
+.env/
+.venv/
+env/
+venv/
+photoye/
+
+# Python packaging artifacts
+*.egg-info/
+build/
+dist/
+
+# IDE / editor settings
+.vscode/
+.idea/
+
+# Databases and logs
+*.db
+*.sqlite3
+*.log
+
+# Downloaded model weights (large binaries)
+models/models/
+
+# Test cache
+.pytest_cache/
+
+# OS junk
+.DS_Store
+Thumbs.db

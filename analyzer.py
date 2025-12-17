@@ -11,6 +11,7 @@ import os
 from typing import List, Dict, Tuple, Optional
 import numpy as np
 import cv2
+from model_profiles import MODEL_PROFILES, DEFAULT_MODEL_PROFILE, MODEL_PROFILE_ENV_VAR
 
 
 class AIAnalyzer:
@@ -22,9 +23,10 @@ class AIAnalyzer:
     """
     
     def __init__(self, models_path: str = "./models", 
-                 detector_type: str = "yunet",
-                 recognizer_type: str = "dlib",
-                 classifier_type: str = "mobilenetv3"):
+                 detector_type: Optional[str] = None,
+                 recognizer_type: Optional[str] = None,
+                 classifier_type: Optional[str] = None,
+                 model_profile: Optional[str] = None):
         """
         初始化AI分析器
         
@@ -32,19 +34,38 @@ class AIAnalyzer:
             models_path: 模型文件存放路径
             detector_type: 人脸检测模型类型 ("yunet", "dlib", "yolov8")
             recognizer_type: 人脸识别模型类型 ("dlib", "arcface", "sface")
-            classifier_type: 场景分类模型类型 ("mobilenetv3", "resnet")
+            classifier_type: 场景分类模型类型 ("mobilenetv2", "resnet", "openclip")
+            model_profile: 模型配置档位 ("speed", "balanced", "accuracy" 等)
+                - 如果未显式指定，将读取环境变量 PHOTOYE_MODEL_PROFILE
+                - 若依然为空，则使用 model_profiles.DEFAULT_MODEL_PROFILE
         """
         self.models_path = models_path
-        
+
+        env_profile = os.getenv(MODEL_PROFILE_ENV_VAR)
+        resolved_profile = (model_profile or env_profile or DEFAULT_MODEL_PROFILE).lower()
+        if resolved_profile not in MODEL_PROFILES:
+            print(f"⚠️ 未识别的模型配置 {resolved_profile}, 将使用默认 {DEFAULT_MODEL_PROFILE}")
+            resolved_profile = DEFAULT_MODEL_PROFILE
+
+        profile_cfg = MODEL_PROFILES[resolved_profile]
+
+        def _normalize(choice: Optional[str], fallback_key: str) -> str:
+            return (choice or fallback_key).lower()
+
+        self.model_profile = resolved_profile
+        self.detector_type = _normalize(detector_type, profile_cfg["detector"])
+        self.recognizer_type = _normalize(recognizer_type, profile_cfg["recognizer"])
+        self.classifier_type = _normalize(classifier_type, profile_cfg["classifier"])
+
         # 初始化模型
-        self.face_detector = self._init_detector(detector_type)
-        self.face_recognizer = self._init_recognizer(recognizer_type)
-        self.scene_classifier = self._init_classifier(classifier_type)
+        self.face_detector = self._init_detector(self.detector_type)
+        self.face_recognizer = self._init_recognizer(self.recognizer_type)
+        self.scene_classifier = self._init_classifier(self.classifier_type)
         
-        print(f"AI分析器初始化完成")
-        print(f"人脸检测模型: {detector_type}")
-        print(f"人脸识别模型: {recognizer_type}")
-        print(f"场景分类模型: {classifier_type}")
+        print(f"AI分析器初始化完成 (配置: {self.model_profile})")
+        print(f"人脸检测模型: {self.detector_type}")
+        print(f"人脸识别模型: {self.recognizer_type}")
+        print(f"场景分类模型: {self.classifier_type}")
     
     def _init_detector(self, detector_type: str):
         """初始化人脸检测模型"""
@@ -67,15 +88,16 @@ class AIAnalyzer:
         """初始化人脸识别模型"""
         if recognizer_type == "dlib":
             from models.dlib_detector import DlibFaceRecognizer
+
             return DlibFaceRecognizer()
+        elif recognizer_type == "sface":
+            from models.opencv_sface_recognizer import OpenCVSFaceRecognizer
+
+            return OpenCVSFaceRecognizer()
         elif recognizer_type == "arcface":
             # ArcFace实现
             print("使用ArcFace人脸识别模型（占位符）")
             return "ArcFace 模型占位符"
-        elif recognizer_type == "sface":
-            # SFace实现
-            print("使用SFace人脸识别模型（占位符）")
-            return "SFace 模型占位符"
         else:
             # 默认使用模拟模型
             print("使用默认人脸识别模型（占位符）")
@@ -83,9 +105,14 @@ class AIAnalyzer:
     
     def _init_classifier(self, classifier_type: str):
         """初始化场景分类模型"""
-        if classifier_type == "mobilenetv3":
-            from models.mobilenetv3_classifier import MobileNetV3SceneClassifier
-            return MobileNetV3SceneClassifier()
+        if classifier_type in ("mobilenetv2", "mobilenetv3"):
+            from models.mobilenetv2_classifier import MobileNetV2SceneClassifier
+
+            return MobileNetV2SceneClassifier()
+        elif classifier_type == "openclip":
+            from models.openclip_zero_shot import OpenCLIPZeroShotClassifier
+
+            return OpenCLIPZeroShotClassifier()
         elif classifier_type == "resnet":
             # ResNet实现
             print("使用ResNet场景分类模型（占位符）")
@@ -133,7 +160,7 @@ class AIAnalyzer:
             # 使用真实模型进行检测
             return self.face_detector.detect(image_path)
     
-    def get_face_embedding(self, image_path: str, bbox: List[int]) -> Optional[np.ndarray]:
+    def get_face_embedding(self, image_path: str, bbox: List[int], landmarks: Optional[List[List[int]]] = None) -> Optional[np.ndarray]:
         """
         获取人脸特征向量
         
@@ -159,7 +186,7 @@ class AIAnalyzer:
             return mock_embedding
         else:
             # 使用真实模型进行识别
-            return self.face_recognizer.get_embedding(image_path, bbox)
+            return self.face_recognizer.get_embedding(image_path, bbox, landmarks)
     
     def classify_scene(self, image_path: str) -> Dict[str, float]:
         """
@@ -234,7 +261,7 @@ class AIAnalyzer:
                 
                 # 为每个人脸提取特征向量
                 for face in faces:
-                    embedding = self.get_face_embedding(image_path, face['bbox'])
+                    embedding = self.get_face_embedding(image_path, face['bbox'], face.get('landmarks'))
                     if embedding is not None:
                         face['embedding'] = embedding
                         result['faces'].append(face)

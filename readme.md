@@ -109,7 +109,7 @@
 此模块是项目的技术核心，包含一组独立的AI模型。为提高效率和跨平台兼容性，所有模型建议使用 `ONNX` 格式。
 
   * **3.2.1. 场景分类与初步归类**
-      * **技术:** 使用预训练的图像分类模型（如 `MobileNetV3` 或 `EfficientNet-Lite`）。
+    * **技术:** 使用预训练的图像分类模型（当前默认 `MobileNetV2` ONNX 版，可替换为 `EfficientNet-Lite` 等）。对需要更细粒度或零样本标签的场景，可以切换为 `OpenCLIP` 零样本分类器（Vision/Text 双 ONNX + tokenizer）。
       * **流程:** 输入一张图片，输出分类标签。
       * **输出:** "风景", "建筑", "动物", "文档", "室内", "美食" 等。无人脸的照片直接归为此类。
   * **3.2.2. 人脸检测模块**
@@ -120,6 +120,16 @@
       * **技术:** 使用先进的人脸识别模型，如 `ArcFace` (推荐) 或 `FaceNet`。
       * **流程:** 将从上一步裁剪出的人脸图像输入此模型。
       * **输出:** 一个512维的浮点数数组（`Face Embedding`），即该人脸的唯一“数字签名”。
+
+  * **3.2.4. 模型配置档 (Profiles)**
+    * **说明:** 在 `model_profiles.py` 中定义了 `speed / balanced / accuracy` 三种组合。
+      * `speed`: 纯 OpenCV 管线，`YuNet + SFace + MobileNetV2`，依赖轻、响应快。
+      * `balanced`: 默认配置，`YuNet + dlib + MobileNetV2`，兼顾速度与精度。
+      * `accuracy`: `dlib + dlib + MobileNetV2`，更耗时但对极端人脸角度更稳定。
+      * `zeroshot`: `YuNet + SFace + OpenCLIP`，牺牲速度换取零样本/细粒度标签能力。
+    * **如何切换:**
+      * 运行前设置环境变量 `PHOTOYE_MODEL_PROFILE`，例如 `set PHOTOYE_MODEL_PROFILE=accuracy`。
+      * 或在代码中实例化 `AIAnalyzer(model_profile="speed")` 进行覆盖。
 
 ### 3.3. 数据库模块
 

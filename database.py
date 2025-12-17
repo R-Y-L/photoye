@@ -191,6 +191,26 @@ def is_photo_exist(filepath: str) -> bool:
         conn.close()
 
 
+def get_photo_status(filepath: str) -> Optional[Tuple[int, str, Optional[str]]]:
+    """返回指定路径的照片记录 (id, status, category)。"""
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT id, status, category FROM photos WHERE filepath = ?",
+            (filepath,),
+        )
+        row = cursor.fetchone()
+        if row:
+            return row[0], row[1], row[2]
+        return None
+    except sqlite3.Error as e:
+        print(f"获取照片状态失败: {e}")
+        return None
+    finally:
+        conn.close()
+
+
 def get_all_photos(status: str = None, category: str = None, library_path: str = None) -> List[Dict]:
     """
     获取所有照片记录
@@ -346,6 +366,75 @@ def get_photos_count(library_path: str = None) -> Dict[str, int]:
     except sqlite3.Error as e:
         print(f"获取统计信息失败: {e}")
         return {}
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# 人脸标记与分类辅助
+# ---------------------------------------------------------------------------
+
+
+def get_or_create_person(name: str) -> Optional[int]:
+    """获取或创建人物条目，返回人物ID。"""
+    if not name:
+        return None
+
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("INSERT OR IGNORE INTO persons (name) VALUES (?)", (name,))
+        conn.commit()
+
+        cursor.execute("SELECT id FROM persons WHERE name = ?", (name,))
+        row = cursor.fetchone()
+        return row[0] if row else None
+    except sqlite3.Error as e:
+        print(f"获取/创建人物失败: {e}")
+        conn.rollback()
+        return None
+    finally:
+        conn.close()
+
+
+def assign_faces_to_person(face_ids: List[int], person_id: int) -> int:
+    """批量将人脸记录关联到指定人物，返回更新条数。"""
+    if not face_ids or person_id is None:
+        return 0
+
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        placeholders = ",".join(["?"] * len(face_ids))
+        params = [person_id] + face_ids
+        cursor.execute(
+            f"UPDATE faces SET person_id = ? WHERE id IN ({placeholders})",
+            params,
+        )
+        conn.commit()
+        return cursor.rowcount
+    except sqlite3.Error as e:
+        print(f"批量标记人脸失败: {e}")
+        conn.rollback()
+        return 0
+    finally:
+        conn.close()
+
+
+def set_photo_category(photo_id: int, category: str) -> bool:
+    """仅更新分类字段，保持状态不变。"""
+    if not category:
+        return False
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("UPDATE photos SET category = ? WHERE id = ?", (category, photo_id))
+        conn.commit()
+        return cursor.rowcount > 0
+    except sqlite3.Error as e:
+        print(f"更新照片分类失败: {e}")
+        conn.rollback()
+        return False
     finally:
         conn.close()
 

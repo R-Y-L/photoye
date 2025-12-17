@@ -20,7 +20,9 @@ Pillow>=9.0.0
 # ============================================================================
 
 onnxruntime>=1.15.0        # AI模型推理引擎
-opencv-python>=4.7.0       # 图像处理和计算机视觉
+opencv-contrib-python>=4.7.0  # 包含 YuNet / SFace / FaceDetectorYN
+dlib>=19.24.2             # Dlib 检测与识别模型支持（Windows 可使用预编译轮子）
+tokenizers>=0.13.0        # OpenCLIP 文本编码 (本地 tokenizer.json )
 
 # 阶段3 - 数据科学和聚类
 # scikit-learn>=1.2.0        # 机器学习和聚类算法

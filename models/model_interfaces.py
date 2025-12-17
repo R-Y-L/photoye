@@ -32,13 +32,14 @@ class FaceRecognizer(ABC):
     """人脸识别模型接口"""
     
     @abstractmethod
-    def get_embedding(self, image_path: str, bbox: List[int]) -> Optional[np.ndarray]:
+    def get_embedding(self, image_path: str, bbox: List[int], landmarks: Optional[List[List[int]]] = None) -> Optional[np.ndarray]:
         """
         获取人脸特征向量
         
         Args:
             image_path: 图片文件路径
             bbox: 人脸边界框 [x1, y1, x2, y2]
+            landmarks: 可选的五点关键点 [[x1,y1], ...]
             
         Returns:
             人脸特征向量，如果失败返回None

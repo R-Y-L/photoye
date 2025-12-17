@@ -12,10 +12,18 @@ import os
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, 
                              QWidget, QMenuBar, QStatusBar, QLabel, QSplitter, 
                              QFileDialog, QListWidget, QListWidgetItem, QPushButton,
-                             QButtonGroup, QGroupBox, QGridLayout, QLineEdit, QComboBox)
+                             QButtonGroup, QGroupBox, QGridLayout, QLineEdit, QComboBox,
+                             QMessageBox)
 from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtGui import QAction, QIcon, QPixmap, QImage
-from database import init_db, get_all_photos, get_faces_by_photo_id
+from database import (
+    init_db,
+    get_all_photos,
+    get_faces_by_photo_id,
+    get_or_create_person,
+    assign_faces_to_person,
+    set_photo_category,
+)
 from worker import ScanWorker
 
 
@@ -133,6 +141,8 @@ class PhotoyeMainWindow(QMainWindow):
             filter_layout.addWidget(btn)
         
         layout.addWidget(filter_group)
+
+        layout.addWidget(self.create_filter_tag_panel())
         
         # 统计信息
         self.stats_label = QLabel("照片总数: 0\n已分析: 0\n待处理: 0")
@@ -149,6 +159,46 @@ class PhotoyeMainWindow(QMainWindow):
         layout.addStretch()
         
         return nav_widget
+
+    def create_filter_tag_panel(self):
+        """筛选和标记区域，集中分类过滤和人脸命名。"""
+        panel = QGroupBox("分类筛选 / 标记")
+        box = QVBoxLayout(panel)
+
+        # 分类筛选
+        self.filter_combo = QComboBox()
+        self.filter_combo.addItem("全部", userData=None)
+        for cat in ["单人照", "合照", "风景", "建筑", "动物", "室内", "美食", "文档"]:
+            self.filter_combo.addItem(cat, userData=cat)
+        apply_filter_btn = QPushButton("应用筛选")
+        apply_filter_btn.clicked.connect(self.apply_filter_from_combo)
+
+        box.addWidget(QLabel("按分类筛选"))
+        box.addWidget(self.filter_combo)
+        box.addWidget(apply_filter_btn)
+
+        # 分类修改
+        self.set_category_combo = QComboBox()
+        for cat in ["单人照", "合照", "风景", "建筑", "动物", "室内", "美食", "文档"]:
+            self.set_category_combo.addItem(cat, userData=cat)
+        set_cat_btn = QPushButton("将选中照片设为此分类")
+        set_cat_btn.clicked.connect(self.update_selected_photo_category)
+
+        box.addWidget(QLabel("手动修改分类"))
+        box.addWidget(self.set_category_combo)
+        box.addWidget(set_cat_btn)
+
+        # 人脸标记
+        self.person_input = QLineEdit()
+        self.person_input.setPlaceholderText("输入人物名称")
+        tag_btn = QPushButton("标记选中照片的人脸")
+        tag_btn.clicked.connect(self.tag_faces_for_selection)
+
+        box.addWidget(QLabel("人脸识别标记"))
+        box.addWidget(self.person_input)
+        box.addWidget(tag_btn)
+
+        return panel
     
     def create_photo_display(self):
         """创建右侧照片展示区"""
@@ -367,11 +417,68 @@ class PhotoyeMainWindow(QMainWindow):
             self.status_bar.showMessage(f"筛选: {category}", 3000)
         else:
             self.status_bar.showMessage("显示全部照片", 3000)
+
+    def apply_filter_from_combo(self):
+        """从筛选下拉框应用分类过滤。"""
+        category = self.filter_combo.currentData()
+        self.filter_photos(category)
     
     def refresh_photos(self):
         """刷新照片显示"""
         self.load_photos(self.current_filter)
         self.status_bar.showMessage("照片列表已刷新", 3000)
+
+    def _selected_photo_items(self):
+        return self.photo_list.selectedItems() or []
+
+    def _selected_photo_ids(self):
+        ids = []
+        for item in self._selected_photo_items():
+            photo = item.data(Qt.ItemDataRole.UserRole)
+            if photo and "id" in photo:
+                ids.append(photo["id"])
+        return ids
+
+    def update_selected_photo_category(self):
+        """将选中照片的分类更新为下拉框选择的值。"""
+        category = self.set_category_combo.currentData()
+        photo_ids = self._selected_photo_ids()
+        if not photo_ids:
+            QMessageBox.information(self, "提示", "请先选中照片，再修改分类。")
+            return
+
+        updated = 0
+        for pid in photo_ids:
+            if set_photo_category(pid, category):
+                updated += 1
+        self.status_bar.showMessage(f"已更新 {updated} 张照片的分类为 {category}", 5000)
+        self.refresh_photos()
+
+    def tag_faces_for_selection(self):
+        """将当前选中照片中的人脸关联到指定人物。"""
+        name = self.person_input.text().strip()
+        if not name:
+            QMessageBox.information(self, "提示", "请先输入人物名称。")
+            return
+
+        photo_ids = self._selected_photo_ids()
+        if not photo_ids:
+            QMessageBox.information(self, "提示", "请先选中包含人脸的照片。")
+            return
+
+        person_id = get_or_create_person(name)
+        if person_id is None:
+            QMessageBox.warning(self, "错误", "无法创建或获取人物条目。")
+            return
+
+        tagged = 0
+        for pid in photo_ids:
+            faces = get_faces_by_photo_id(pid)
+            face_ids = [f["id"] for f in faces]
+            tagged += assign_faces_to_person(face_ids, person_id)
+
+        self.status_bar.showMessage(f"已为 {len(photo_ids)} 张照片的 {tagged} 张人脸标记为 {name}", 5000)
+        self.person_input.clear()
     
     def select_library(self):
         """选择照片库"""

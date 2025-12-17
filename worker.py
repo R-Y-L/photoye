@@ -12,7 +12,13 @@ import time
 from pathlib import Path
 from typing import List, Callable, Optional
 from PyQt6.QtCore import QThread, pyqtSignal
-from database import add_photo, is_photo_exist, update_photo_status, add_face_data
+from database import (
+    add_photo,
+    is_photo_exist,
+    update_photo_status,
+    add_face_data,
+    get_photo_status,
+)
 from analyzer import AIAnalyzer
 
 
@@ -111,11 +117,18 @@ class ScanWorker(QThread):
                 photo_id = add_photo(file_path)
                 if photo_id is not None:
                     self.file_found.emit(file_path)
-                    
                     # 对新文件进行AI分析
                     self._analyze_photo(photo_id, file_path)
             else:
-                print(f"文件已存在数据库中: {file_path}")
+                status_row = get_photo_status(file_path)
+                if status_row:
+                    photo_id, status, category = status_row
+                    # 若未完成或缺少分类，则重新分析
+                    if status != "done" or not category:
+                        print(f"重新分析未完成的照片: {file_path} (status={status}, category={category})")
+                        self._analyze_photo(photo_id, file_path)
+                else:
+                    print(f"文件已存在数据库中: {file_path}")
                 
             processed_files += 1
             
