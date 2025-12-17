@@ -17,49 +17,83 @@ class AIAnalyzer:
     """
     AI分析器类 - 封装所有AI模型推理功能
     
-    在阶段0中，这是一个占位类，用于验证架构设计
-    实际的模型加载和推理将在阶段2中实现
+    支持插件化的模型切换
+    实现场景分类优先，再进行人脸识别的两阶段分析流程
     """
     
-    def __init__(self, models_path: str = "./models"):
+    def __init__(self, models_path: str = "./models", 
+                 detector_type: str = "yunet",
+                 recognizer_type: str = "dlib",
+                 classifier_type: str = "mobilenetv3"):
         """
         初始化AI分析器
         
         Args:
             models_path: 模型文件存放路径
+            detector_type: 人脸检测模型类型 ("yunet", "dlib", "yolov8")
+            recognizer_type: 人脸识别模型类型 ("dlib", "arcface", "sface")
+            classifier_type: 场景分类模型类型 ("mobilenetv3", "resnet")
         """
         self.models_path = models_path
-        self.face_detector = None
-        self.face_recognizer = None
-        self.scene_classifier = None
         
-        print(f"AI分析器初始化 (阶段2)")
-        print(f"模型路径: {models_path}")
+        # 初始化模型
+        self.face_detector = self._init_detector(detector_type)
+        self.face_recognizer = self._init_recognizer(recognizer_type)
+        self.scene_classifier = self._init_classifier(classifier_type)
         
-        # 检查模型目录是否存在
-        if not os.path.exists(models_path):
-            print(f"创建模型目录: {models_path}")
-            os.makedirs(models_path, exist_ok=True)
-        
-        # 加载模型
-        self._load_models()
+        print(f"AI分析器初始化完成")
+        print(f"人脸检测模型: {detector_type}")
+        print(f"人脸识别模型: {recognizer_type}")
+        print(f"场景分类模型: {classifier_type}")
     
-    def _load_models(self):
-        """
-        加载所有AI模型 
-        
-        在阶段2中将实现:
-        - 加载YOLOv8-Face人脸检测模型
-        - 加载ArcFace人脸识别模型
-        - 加载场景分类模型
-        """
-        print("正在加载AI模型...")
-        # 在这个阶段，我们先用模拟的方式加载模型
-        # 实际项目中，这里会加载ONNX模型文件
-        self.face_detector = "YOLOv8-Face 模型占位符"
-        self.face_recognizer = "ArcFace 模型占位符"
-        self.scene_classifier = "场景分类模型占位符"
-        print("AI模型加载完成")
+    def _init_detector(self, detector_type: str):
+        """初始化人脸检测模型"""
+        if detector_type == "yunet":
+            from models.opencv_yunet_detector import OpenCVYuNetDetector
+            return OpenCVYuNetDetector()
+        elif detector_type == "dlib":
+            from models.dlib_detector import DlibFaceDetector
+            return DlibFaceDetector()
+        elif detector_type == "yolov8":
+            # YOLOv8实现
+            print("使用YOLOv8人脸检测模型（占位符）")
+            return "YOLOv8-Face 模型占位符"
+        else:
+            # 默认使用模拟模型
+            print("使用默认人脸检测模型（占位符）")
+            return "人脸检测模型占位符"
+    
+    def _init_recognizer(self, recognizer_type: str):
+        """初始化人脸识别模型"""
+        if recognizer_type == "dlib":
+            from models.dlib_detector import DlibFaceRecognizer
+            return DlibFaceRecognizer()
+        elif recognizer_type == "arcface":
+            # ArcFace实现
+            print("使用ArcFace人脸识别模型（占位符）")
+            return "ArcFace 模型占位符"
+        elif recognizer_type == "sface":
+            # SFace实现
+            print("使用SFace人脸识别模型（占位符）")
+            return "SFace 模型占位符"
+        else:
+            # 默认使用模拟模型
+            print("使用默认人脸识别模型（占位符）")
+            return "人脸识别模型占位符"
+    
+    def _init_classifier(self, classifier_type: str):
+        """初始化场景分类模型"""
+        if classifier_type == "mobilenetv3":
+            from models.mobilenetv3_classifier import MobileNetV3SceneClassifier
+            return MobileNetV3SceneClassifier()
+        elif classifier_type == "resnet":
+            # ResNet实现
+            print("使用ResNet场景分类模型（占位符）")
+            return "ResNet 模型占位符"
+        else:
+            # 默认使用模拟模型
+            print("使用默认场景分类模型（占位符）")
+            return "场景分类模型占位符"
     
     def detect_faces(self, image_path: str) -> List[Dict]:
         """
@@ -79,27 +113,25 @@ class AIAnalyzer:
             print(f"图片文件不存在: {image_path}")
             return []
         
-        # 在实际实现中，这里会:
-        # 1. 使用OpenCV读取图片
-        # 2. 预处理图片（调整大小、归一化等）
-        # 3. 送入YOLOv8-Face模型推理
-        # 4. 后处理检测结果（NMS、置信度筛选等）
-        # 5. 返回边界框和置信度
-        
-        # 当前阶段使用模拟结果
-        # 模拟检测到1-3个人脸
-        import random
-        num_faces = random.randint(0, 3)
-        mock_results = []
-        for i in range(num_faces):
-            mock_results.append({
-                'bbox': [random.randint(50, 200), random.randint(50, 200), 
-                         random.randint(300, 500), random.randint(300, 500)],
-                'confidence': random.uniform(0.7, 0.95)
-            })
-        
-        print(f"检测到 {num_faces} 个人脸")
-        return mock_results
+        # 如果使用真实模型
+        if isinstance(self.face_detector, str):
+            # 当前阶段使用模拟结果
+            # 模拟检测到1-3个人脸
+            import random
+            num_faces = random.randint(0, 3)
+            mock_results = []
+            for i in range(num_faces):
+                mock_results.append({
+                    'bbox': [random.randint(50, 200), random.randint(50, 200), 
+                             random.randint(300, 500), random.randint(300, 500)],
+                    'confidence': random.uniform(0.7, 0.95)
+                })
+            
+            print(f"检测到 {num_faces} 个人脸（模拟结果）")
+            return mock_results
+        else:
+            # 使用真实模型进行检测
+            return self.face_detector.detect(image_path)
     
     def get_face_embedding(self, image_path: str, bbox: List[int]) -> Optional[np.ndarray]:
         """
@@ -110,7 +142,7 @@ class AIAnalyzer:
             bbox: 人脸边界框 [x1, y1, x2, y2]
         
         Returns:
-            512维的人脸特征向量，如果失败返回None
+            人脸特征向量，如果失败返回None
         """
         print(f"提取人脸特征: {os.path.basename(image_path)}, bbox={bbox}")
         
@@ -119,16 +151,15 @@ class AIAnalyzer:
             print(f"图片文件不存在: {image_path}")
             return None
         
-        # 在实际实现中，这里会:
-        # 1. 使用OpenCV读取图片
-        # 2. 根据bbox裁剪出人脸区域
-        # 3. 预处理人脸图片（对齐、调整大小、归一化等）
-        # 4. 送入ArcFace模型推理
-        # 5. 返回512维特征向量
-        
-        # 当前阶段使用模拟结果
-        mock_embedding = np.random.rand(512).astype(np.float32)
-        return mock_embedding
+        # 如果使用真实模型
+        if isinstance(self.face_recognizer, str):
+            # 当前阶段使用模拟结果
+            mock_embedding = np.random.rand(512).astype(np.float32)
+            print("生成模拟人脸特征向量")
+            return mock_embedding
+        else:
+            # 使用真实模型进行识别
+            return self.face_recognizer.get_embedding(image_path, bbox)
     
     def classify_scene(self, image_path: str) -> Dict[str, float]:
         """
@@ -148,25 +179,26 @@ class AIAnalyzer:
             print(f"图片文件不存在: {image_path}")
             return {}
         
-        # 在实际实现中，这里会:
-        # 1. 使用Pillow或OpenCV读取图片
-        # 2. 预处理图片（调整大小、归一化等）
-        # 3. 送入分类模型推理
-        # 4. 返回各类别的置信度
-        
-        # 当前阶段使用模拟结果
-        import random
-        categories = ['风景', '建筑', '动物', '文档', '室内', '美食']
-        weights = [random.random() for _ in categories]
-        total_weight = sum(weights)
-        normalized_weights = [w/total_weight for w in weights]
-        
-        mock_classification = dict(zip(categories, normalized_weights))
-        return mock_classification
+        # 如果使用真实模型
+        if isinstance(self.scene_classifier, str):
+            # 当前阶段使用模拟结果
+            import random
+            categories = ['风景', '建筑', '动物', '文档', '室内', '美食']
+            weights = [random.random() for _ in categories]
+            total_weight = sum(weights)
+            normalized_weights = [w/total_weight for w in weights]
+            
+            mock_classification = dict(zip(categories, normalized_weights))
+            return mock_classification
+        else:
+            # 使用真实模型进行分类
+            return self.scene_classifier.classify(image_path)
     
     def analyze_photo(self, image_path: str) -> Dict:
         """
-        对单张照片进行完整分析
+        对单张照片进行完整分析（两阶段流程）
+        第一阶段：场景分类，筛选出可能包含人脸的图片
+        第二阶段：对筛选出的图片进行人脸识别
         
         Args:
             image_path: 图片文件路径
@@ -188,37 +220,61 @@ class AIAnalyzer:
         }
         
         try:
-            # 检测人脸
-            faces = self.detect_faces(image_path)
-            
-            # 为每个人脸提取特征向量
-            for face in faces:
-                embedding = self.get_face_embedding(image_path, face['bbox'])
-                if embedding is not None:
-                    face['embedding'] = embedding
-                    result['faces'].append(face)
-            
-            # 场景分类
+            # 第一阶段：场景分类
             classification = self.classify_scene(image_path)
             result['scene_classification'] = classification
             
-            # 根据人脸数量确定初步分类
-            face_count = len(result['faces'])
-            if face_count == 0:
-                # 无人脸，使用场景分类结果
+            # 根据场景分类决定是否需要人脸识别
+            # 例如，只有在人物相关的分类中才进行人脸识别
+            need_face_recognition = self._should_detect_faces(classification)
+            
+            if need_face_recognition:
+                # 第二阶段：人脸检测和识别
+                faces = self.detect_faces(image_path)
+                
+                # 为每个人脸提取特征向量
+                for face in faces:
+                    embedding = self.get_face_embedding(image_path, face['bbox'])
+                    if embedding is not None:
+                        face['embedding'] = embedding
+                        result['faces'].append(face)
+                
+                # 根据人脸数量确定最终分类
+                face_count = len(result['faces'])
+                if face_count == 1:
+                    result['category'] = '单人照'
+                elif face_count > 1:
+                    result['category'] = '合照'
+                else:
+                    # 有场景分类但未检测到人脸，使用场景分类结果
+                    best_scene = max(classification.items(), key=lambda x: x[1])
+                    result['category'] = best_scene[0]
+            else:
+                # 不需要人脸识别，直接使用场景分类结果
                 best_scene = max(classification.items(), key=lambda x: x[1])
                 result['category'] = best_scene[0]
-            elif face_count == 1:
-                result['category'] = '单人照'
-            else:
-                result['category'] = '合照'
             
-            print(f"分析完成: {face_count}个人脸, 分类={result['category']}")
+            print(f"分析完成: 分类={result['category']}, 人脸数={len(result['faces'])}")
             return result
             
         except Exception as e:
             print(f"分析照片失败: {e}")
             return None
+    
+    def _should_detect_faces(self, classification: Dict[str, float]) -> bool:
+        """
+        根据场景分类结果判断是否需要进行人脸识别
+        """
+        # 定义需要人脸识别的场景类别
+        face_needed_categories = ['单人照', '合照', '人物', '肖像']
+        
+        # 检查最高概率的分类是否需要人脸识别
+        if classification:
+            best_category = max(classification.items(), key=lambda x: x[1])[0]
+            return best_category in face_needed_categories
+        
+        # 默认进行人脸识别
+        return True
     
     def batch_analyze(self, image_paths: List[str], progress_callback=None) -> List[Dict]:
         """

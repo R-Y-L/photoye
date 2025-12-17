@@ -191,13 +191,14 @@ def is_photo_exist(filepath: str) -> bool:
         conn.close()
 
 
-def get_all_photos(status: str = None, category: str = None) -> List[Dict]:
+def get_all_photos(status: str = None, category: str = None, library_path: str = None) -> List[Dict]:
     """
     获取所有照片记录
     
     Args:
         status: 可选的状态过滤器 ('pending', 'processing', 'done')
         category: 可选的分类过滤器 ('风景', '单人照', '合照')
+        library_path: 可选的库路径过滤器
     
     Returns:
         照片记录列表，每个记录是一个字典
@@ -218,6 +219,10 @@ def get_all_photos(status: str = None, category: str = None) -> List[Dict]:
         if category:
             conditions.append("category = ?")
             params.append(category)
+        
+        if library_path:
+            conditions.append("filepath LIKE ?")
+            params.append(library_path.replace('\\', '/') + '%')
         
         if conditions:
             query += " WHERE " + " AND ".join(conditions)
@@ -282,9 +287,12 @@ def update_photo_status(photo_id: int, status: str, category: str = None) -> boo
         conn.close()
 
 
-def get_photos_count() -> Dict[str, int]:
+def get_photos_count(library_path: str = None) -> Dict[str, int]:
     """
     获取照片数量统计信息
+    
+    Args:
+        library_path: 可选的库路径过滤器
     
     Returns:
         包含各种统计数据的字典
@@ -294,24 +302,37 @@ def get_photos_count() -> Dict[str, int]:
     try:
         cursor = conn.cursor()
         
+        # 构造基础查询和参数
+        base_query = ""
+        params = []
+        
+        if library_path:
+            base_query = " WHERE filepath LIKE ?"
+            params = [library_path.replace('\\', '/') + '%']
+        
         # 总照片数
-        cursor.execute("SELECT COUNT(*) FROM photos")
+        query_total = "SELECT COUNT(*) FROM photos" + base_query
+        cursor.execute(query_total, params)
         total = cursor.fetchone()[0]
         
         # 按状态统计
-        cursor.execute("SELECT status, COUNT(*) FROM photos GROUP BY status")
+        query_status = "SELECT status, COUNT(*) FROM photos" + base_query + " GROUP BY status"
+        cursor.execute(query_status, params)
         status_counts = dict(cursor.fetchall())
         
         # 按分类统计
-        cursor.execute("SELECT category, COUNT(*) FROM photos WHERE category IS NOT NULL GROUP BY category")
+        query_category = "SELECT category, COUNT(*) FROM photos" + base_query + " AND category IS NOT NULL GROUP BY category"
+        cursor.execute(query_category, params)
         category_counts = dict(cursor.fetchall())
         
         # 人脸数量
-        cursor.execute("SELECT COUNT(*) FROM faces")
+        query_faces = "SELECT COUNT(*) FROM faces WHERE photo_id IN (SELECT id FROM photos" + base_query + ")"
+        cursor.execute(query_faces, params)
         faces_count = cursor.fetchone()[0]
         
         # 已命名人物数量
-        cursor.execute("SELECT COUNT(*) FROM persons")
+        query_persons = "SELECT COUNT(*) FROM persons"
+        cursor.execute(query_persons)
         persons_count = cursor.fetchone()[0]
         
         return {

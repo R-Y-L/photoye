@@ -280,9 +280,7 @@ class PhotoyeMainWindow(QMainWindow):
         # 获取照片数据
         if self.current_library_path:
             # 如果指定了当前库路径，则只加载该路径下的照片
-            all_photos = get_all_photos(category=category)
-            photos = [photo for photo in all_photos 
-                     if os.path.dirname(photo['filepath']) == self.current_library_path]
+            photos = get_all_photos(category=category, library_path=self.current_library_path)
         else:
             photos = get_all_photos(category=category)
         
@@ -339,11 +337,25 @@ class PhotoyeMainWindow(QMainWindow):
     def update_stats(self):
         """更新统计信息"""
         from database import get_photos_count
-        stats = get_photos_count()
+        if self.current_library_path:
+            stats = get_photos_count(library_path=self.current_library_path)
+        else:
+            stats = get_photos_count()
         
         stats_text = f"照片总数: {stats.get('total', 0)}\n"
         stats_text += f"已分析: {stats.get('status', {}).get('done', 0)}\n"
         stats_text += f"待处理: {stats.get('status', {}).get('pending', 0)}"
+        
+        # 添加处理中状态的统计
+        processing_count = stats.get('status', {}).get('processing', 0)
+        if processing_count > 0:
+            stats_text += f"\n处理中: {processing_count}"
+        
+        # 添加人脸和人物统计
+        faces_count = stats.get('faces', 0)
+        persons_count = stats.get('persons', 0)
+        stats_text += f"\n人脸数: {faces_count}"
+        stats_text += f"\n人物数: {persons_count}"
         
         self.stats_label.setText(stats_text)
     
@@ -428,17 +440,9 @@ class PhotoyeMainWindow(QMainWindow):
     
     def show_db_info(self):
         """显示数据库信息"""
-        from database import get_photos_count
-        stats = get_photos_count()
-        
-        info_text = "数据库信息:\n"
-        info_text += f"照片总数: {stats.get('total', 0)}\n"
-        info_text += f"已分析: {stats.get('status', {}).get('done', 0)}\n"
-        info_text += f"待处理: {stats.get('status', {}).get('pending', 0)}\n"
-        info_text += f"人脸数量: {stats.get('faces', 0)}\n"
-        info_text += f"人物数量: {stats.get('persons', 0)}\n"
-        
-        self.status_bar.showMessage(info_text, 5000)
+        # 更新统计信息显示
+        self.update_stats()
+        self.status_bar.showMessage("数据库信息已更新", 3000)
     
     def show_about(self):
         """显示关于信息"""
