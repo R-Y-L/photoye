@@ -116,6 +116,7 @@ def init_db() -> None:
         
         conn.commit()
         print(f"数据库初始化成功: {get_db_path()}")
+        print(f"表结构: photos(临时,每次关闭时清空), persons/faces/tags(持久)")
         
     except sqlite3.Error as e:
         print(f"数据库初始化失败: {e}")
@@ -123,6 +124,36 @@ def init_db() -> None:
         raise
     finally:
         conn.close()
+
+
+def clear_temp_photos() -> None:
+    """
+    清空临时照片表（photos 及其关联的临时数据）
+    保留 persons, faces, tags 等持久数据供下次使用
+    """
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM photos")
+        cursor.execute("DELETE FROM photo_tags WHERE photo_id NOT IN (SELECT id FROM photos)")
+        conn.commit()
+        print(f"已清空临时照片数据")
+    except sqlite3.Error as e:
+        print(f"清空临时照片失败: {e}")
+        conn.rollback()
+    finally:
+        conn.close()
+
+
+def cleanup_on_exit() -> None:
+    """
+    程序退出时的清理操作：
+    1. 清空临时照片表
+    2. 保留人脸embedding和人物身份信息供下次使用
+    """
+    print("正在清理临时数据...")
+    clear_temp_photos()
+    print("临时数据已清理，人脸和人物信息已保留")
 
 
 def add_photo(filepath: str, filesize: int = None, created_at: str = None) -> Optional[int]:
@@ -211,52 +242,135 @@ def get_photo_status(filepath: str) -> Optional[Tuple[int, str, Optional[str]]]:
         conn.close()
 
 
-def get_all_photos(status: str = None, category: str = None, library_path: str = None) -> List[Dict]:
+def get_all_photos(
+    status: str = None,
+    categories: Optional[List[str]] = None,
+    library_path: str = None,
+    person_id: Optional[int] = None,
+    has_faces: Optional[bool] = None,
+    unlabeled_faces: bool = False,
+) -> List[Dict]:
     """
-    获取所有照片记录
+    获取所有照片记录，支持按人物和人脸存在性过滤。
     
+    注意：photos 表为临时表，仅在本次运行期间有效。
+
     Args:
         status: 可选的状态过滤器 ('pending', 'processing', 'done')
-        category: 可选的分类过滤器 ('风景', '单人照', '合照')
+        categories: 可选的分类过滤器列表，支持多选（如 ['单人照', '合照']）
         library_path: 可选的库路径过滤器
-    
+        person_id: 若提供，则只返回包含指定人物的人脸的照片
+        has_faces: True 只要含有人脸，False 仅无任何人脸
+        unlabeled_faces: True 时返回含有未命名人脸的照片
+
     Returns:
         照片记录列表，每个记录是一个字典
     """
     conn = get_connection()
-    
+
     try:
         cursor = conn.cursor()
-        
-        query = "SELECT * FROM photos"
-        params = []
+
+        query = "SELECT DISTINCT p.* FROM photos p"
+        joins = []
         conditions = []
-        
+        params: list = []
+
         if status:
-            conditions.append("status = ?")
+            conditions.append("p.status = ?")
             params.append(status)
-        
-        if category:
-            conditions.append("category = ?")
-            params.append(category)
-        
+
+        if categories:
+            placeholders = ",".join(["?"] * len(categories))
+            conditions.append(f"p.category IN ({placeholders})")
+            params.extend(categories)
+
         if library_path:
-            conditions.append("filepath LIKE ?")
+            conditions.append("p.filepath LIKE ?")
             params.append(library_path.replace('\\', '/') + '%')
-        
+
+        if person_id is not None:
+            joins.append("JOIN faces f ON f.photo_id = p.id AND f.person_id = ?")
+            params.append(person_id)
+        elif unlabeled_faces:
+            joins.append("JOIN faces f ON f.photo_id = p.id AND f.person_id IS NULL")
+        elif has_faces is True:
+            joins.append("JOIN faces f ON f.photo_id = p.id")
+        elif has_faces is False:
+            conditions.append("NOT EXISTS (SELECT 1 FROM faces f WHERE f.photo_id = p.id)")
+
+        if joins:
+            query += " " + " ".join(joins)
+
         if conditions:
             query += " WHERE " + " AND ".join(conditions)
-        
-        query += " ORDER BY added_at DESC"
-        
+
+        query += " ORDER BY p.added_at DESC"
+
         cursor.execute(query, params)
-        
-        # 将Row对象转换为字典
+
         rows = cursor.fetchall()
         return [dict(row) for row in rows]
-        
+
     except sqlite3.Error as e:
         print(f"获取照片列表失败: {e}")
+        return []
+    finally:
+        conn.close()
+
+
+def get_unlabeled_faces(limit: int = 30) -> List[Dict]:
+    """获取未命名人脸列表，附带照片路径与 bbox，便于前端展示命名。"""
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT f.id, f.photo_id, f.bbox, f.confidence, p.filepath
+            FROM faces f
+            JOIN photos p ON p.id = f.photo_id
+            WHERE f.person_id IS NULL
+            ORDER BY f.id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        rows = cursor.fetchall()
+        import json
+
+        faces = []
+        for row in rows:
+            face = dict(row)
+            face["bbox"] = json.loads(face["bbox"])
+            faces.append(face)
+        return faces
+    except sqlite3.Error as e:
+        print(f"获取未命名人脸失败: {e}")
+        return []
+    finally:
+        conn.close()
+
+
+def list_persons() -> List[Dict]:
+    """返回已命名人物列表及人脸/照片计数。"""
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT p.id, p.name,
+                   COUNT(f.id) AS face_count,
+                   COUNT(DISTINCT f.photo_id) AS photo_count
+            FROM persons p
+            LEFT JOIN faces f ON f.person_id = p.id
+            GROUP BY p.id, p.name
+            ORDER BY p.name COLLATE NOCASE
+            """
+        )
+        rows = cursor.fetchall()
+        return [dict(row) for row in rows]
+    except sqlite3.Error as e:
+        print(f"获取人物列表失败: {e}")
         return []
     finally:
         conn.close()
@@ -322,32 +436,54 @@ def get_photos_count(library_path: str = None) -> Dict[str, int]:
     try:
         cursor = conn.cursor()
         
-        # 构造基础查询和参数
-        base_query = ""
-        params = []
-        
+        # 构造基础条件和参数
+        base_conditions = []
+        base_params: List = []
+
         if library_path:
-            base_query = " WHERE filepath LIKE ?"
-            params = [library_path.replace('\\', '/') + '%']
-        
+            base_conditions.append("filepath LIKE ?")
+            base_params.append(library_path.replace('\\', '/') + '%')
+
+        def build_where(extra_conditions: Optional[List[str]] = None) -> str:
+            conditions = list(base_conditions)
+            if extra_conditions:
+                conditions.extend(extra_conditions)
+            if conditions:
+                return " WHERE " + " AND ".join(conditions)
+            return ""
+
+        def build_params(extra_params: Optional[List] = None) -> List:
+            params = list(base_params)
+            if extra_params:
+                params.extend(extra_params)
+            return params
+
         # 总照片数
-        query_total = "SELECT COUNT(*) FROM photos" + base_query
-        cursor.execute(query_total, params)
+        query_total = "SELECT COUNT(*) FROM photos" + build_where()
+        cursor.execute(query_total, build_params())
         total = cursor.fetchone()[0]
-        
+
         # 按状态统计
-        query_status = "SELECT status, COUNT(*) FROM photos" + base_query + " GROUP BY status"
-        cursor.execute(query_status, params)
+        query_status = "SELECT status, COUNT(*) FROM photos" + build_where() + " GROUP BY status"
+        cursor.execute(query_status, build_params())
         status_counts = dict(cursor.fetchall())
-        
+
         # 按分类统计
-        query_category = "SELECT category, COUNT(*) FROM photos" + base_query + " AND category IS NOT NULL GROUP BY category"
-        cursor.execute(query_category, params)
+        query_category = (
+            "SELECT category, COUNT(*) FROM photos"
+            + build_where(["category IS NOT NULL"])
+            + " GROUP BY category"
+        )
+        cursor.execute(query_category, build_params())
         category_counts = dict(cursor.fetchall())
-        
+
         # 人脸数量
-        query_faces = "SELECT COUNT(*) FROM faces WHERE photo_id IN (SELECT id FROM photos" + base_query + ")"
-        cursor.execute(query_faces, params)
+        query_faces = (
+            "SELECT COUNT(*) FROM faces WHERE photo_id IN (SELECT id FROM photos"
+            + build_where()
+            + ")"
+        )
+        cursor.execute(query_faces, build_params())
         faces_count = cursor.fetchone()[0]
         
         # 已命名人物数量

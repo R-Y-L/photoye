@@ -63,9 +63,9 @@ class AIAnalyzer:
         self.scene_classifier = self._init_classifier(self.classifier_type)
         
         print(f"AI分析器初始化完成 (配置: {self.model_profile})")
-        print(f"人脸检测模型: {self.detector_type}")
-        print(f"人脸识别模型: {self.recognizer_type}")
-        print(f"场景分类模型: {self.classifier_type}")
+        print(f"人脸检测模型: {self.detector_type} -> {self.face_detector.__class__.__name__}")
+        print(f"人脸识别模型: {self.recognizer_type} -> {self.face_recognizer.__class__.__name__}")
+        print(f"场景分类模型: {self.classifier_type} -> {self.scene_classifier.__class__.__name__}")
     
     def _init_detector(self, detector_type: str):
         """初始化人脸检测模型"""
@@ -140,6 +140,7 @@ class AIAnalyzer:
             print(f"图片文件不存在: {image_path}")
             return []
         
+        print(f"正在使用检测器: {self.face_detector.__class__.__name__}")
         # 如果使用真实模型
         if isinstance(self.face_detector, str):
             # 当前阶段使用模拟结果
@@ -178,6 +179,7 @@ class AIAnalyzer:
             print(f"图片文件不存在: {image_path}")
             return None
         
+        print(f"正在使用识别器: {self.face_recognizer.__class__.__name__}")
         # 如果使用真实模型
         if isinstance(self.face_recognizer, str):
             # 当前阶段使用模拟结果
@@ -206,6 +208,7 @@ class AIAnalyzer:
             print(f"图片文件不存在: {image_path}")
             return {}
         
+        print(f"正在使用分类器: {self.scene_classifier.__class__.__name__}")
         # 如果使用真实模型
         if isinstance(self.scene_classifier, str):
             # 当前阶段使用模拟结果

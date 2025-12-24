@@ -37,13 +37,15 @@ class ScanWorker(QThread):
     scan_completed = pyqtSignal(int)  # total_files
     error_occurred = pyqtSignal(str)  # error_message
     
-    def __init__(self, root_path: str, supported_extensions: List[str] = None):
+    def __init__(self, root_path: str, supported_extensions: List[str] = None, model_profile: Optional[str] = None, analyze: bool = False):
         """
         初始化扫描工作线程
         
         Args:
             root_path: 要扫描的根目录路径
             supported_extensions: 支持的文件扩展名列表
+            model_profile: 模型档位
+            analyze: 是否在扫描时进行分析，False 仅导入照片，True 导入并分析
         """
         super().__init__()
         
@@ -53,13 +55,20 @@ class ScanWorker(QThread):
         ]
         self.is_running = False
         self.should_stop = False
-        
-        # 初始化AI分析器
-        self.ai_analyzer = AIAnalyzer()
+        self.model_profile = model_profile
+        self.analyze = analyze
+
+        # 仅在需要分析时初始化AI分析器
+        self.ai_analyzer = None
+        if self.analyze:
+            self.ai_analyzer = AIAnalyzer(model_profile=model_profile)
         
         print(f"扫描工作线程初始化")
         print(f"根目录: {root_path}")
         print(f"支持格式: {self.supported_extensions}")
+        print(f"模式: {'导入+分析' if analyze else '仅导入'}")
+        if model_profile:
+            print(f"模型档位: {model_profile}")
     
     def run(self):
         """
@@ -117,18 +126,22 @@ class ScanWorker(QThread):
                 photo_id = add_photo(file_path)
                 if photo_id is not None:
                     self.file_found.emit(file_path)
-                    # 对新文件进行AI分析
-                    self._analyze_photo(photo_id, file_path)
-            else:
-                status_row = get_photo_status(file_path)
-                if status_row:
-                    photo_id, status, category = status_row
-                    # 若未完成或缺少分类，则重新分析
-                    if status != "done" or not category:
-                        print(f"重新分析未完成的照片: {file_path} (status={status}, category={category})")
+                    # 仅在 analyze=True 时进行分析
+                    if self.analyze and self.ai_analyzer:
                         self._analyze_photo(photo_id, file_path)
+            else:
+                # 如果 analyze=True 且照片未完成或缺少分类，则重新分析
+                if self.analyze:
+                    status_row = get_photo_status(file_path)
+                    if status_row:
+                        photo_id, status, category = status_row
+                        if status != "done" or not category:
+                            print(f"重新分析未完成的照片: {file_path} (status={status}, category={category})")
+                            self._analyze_photo(photo_id, file_path)
+                    else:
+                        print(f"文件已存在数据库中: {file_path}")
                 else:
-                    print(f"文件已存在数据库中: {file_path}")
+                    print(f"文件已存在数据库中（仅导入模式，跳过分析）: {file_path}")
                 
             processed_files += 1
             
@@ -147,6 +160,10 @@ class ScanWorker(QThread):
             photo_id: 照片在数据库中的ID
             file_path: 照片文件路径
         """
+        if not self.ai_analyzer:
+            print(f"❌ 分析器未初始化，跳过分析: {file_path}")
+            return
+            
         try:
             print(f"开始分析照片: {file_path}")
             
