@@ -75,6 +75,9 @@ class AIAnalyzer:
         elif detector_type == "dlib":
             from models.dlib_detector import DlibFaceDetector
             return DlibFaceDetector()
+        elif detector_type == "insightface":
+            from models.insightface_detector import InsightFaceDetector
+            return InsightFaceDetector()
         elif detector_type == "yolov8":
             # YOLOv8实现
             print("使用YOLOv8人脸检测模型（占位符）")
@@ -94,10 +97,13 @@ class AIAnalyzer:
             from models.opencv_sface_recognizer import OpenCVSFaceRecognizer
 
             return OpenCVSFaceRecognizer()
+        elif recognizer_type == "insightface":
+            from models.insightface_recognizer import InsightFaceRecognizer
+            return InsightFaceRecognizer()
         elif recognizer_type == "arcface":
-            # ArcFace实现
-            print("使用ArcFace人脸识别模型（占位符）")
-            return "ArcFace 模型占位符"
+            # ArcFace实现 (alias for insightface)
+            from models.insightface_recognizer import InsightFaceRecognizer
+            return InsightFaceRecognizer()
         else:
             # 默认使用模拟模型
             print("使用默认人脸识别模型（占位符）")
@@ -365,33 +371,94 @@ class AIAnalyzer:
         if not embeddings:
             return []
         
-        # 在实际实现中，这里会使用更高效的聚类算法
-        # 如DBSCAN或层次聚类
+        # 使用改进的层次聚类算法
+        # 1. 首先计算所有特征向量之间的相似度矩阵
+        # 2. 使用贪心算法将相似的人脸分组
         
-        # 简单的相似度聚类
-        clusters = []
-        used = set()
+        n = len(embeddings)
+        if n == 1:
+            return [[0]]
         
-        for i, emb1 in enumerate(embeddings):
-            if i in used:
-                continue
-            
-            cluster = [i]
-            used.add(i)
-            
-            for j, emb2 in enumerate(embeddings):
-                if j <= i or j in used:
-                    continue
-                
-                similarity = self.compare_faces(emb1, emb2)
-                if similarity > threshold:
-                    cluster.append(j)
-                    used.add(j)
-            
-            clusters.append(cluster)
+        # 计算相似度矩阵（上三角）
+        similarity_matrix = {}
+        for i in range(n):
+            for j in range(i + 1, n):
+                sim = self.compare_faces(embeddings[i], embeddings[j])
+                similarity_matrix[(i, j)] = sim
+        
+        # 使用 Union-Find 进行聚类
+        parent = list(range(n))
+        
+        def find(x):
+            if parent[x] != x:
+                parent[x] = find(parent[x])
+            return parent[x]
+        
+        def union(x, y):
+            px, py = find(x), find(y)
+            if px != py:
+                parent[px] = py
+        
+        # 将相似度超过阈值的合并
+        for (i, j), sim in similarity_matrix.items():
+            if sim > threshold:
+                union(i, j)
+        
+        # 收集聚类结果
+        cluster_map = {}
+        for i in range(n):
+            root = find(i)
+            if root not in cluster_map:
+                cluster_map[root] = []
+            cluster_map[root].append(i)
+        
+        clusters = list(cluster_map.values())
         
         print(f"聚类完成: {len(clusters)} 个聚类")
         return clusters
+    
+    def cluster_faces_with_ids(self, face_data: List[Dict], threshold: float = 0.65) -> List[Dict]:
+        """
+        对人脸数据进行聚类，返回带有人脸ID的聚类结果
+        
+        Args:
+            face_data: 人脸数据列表，每个元素包含 {id, embedding, ...}
+            threshold: 相似度阈值
+        
+        Returns:
+            聚类结果列表，每个元素包含 {face_ids, representative_id, average_embedding}
+        """
+        if not face_data:
+            return []
+        
+        embeddings = [f['embedding'] for f in face_data]
+        indices = self.cluster_faces(embeddings, threshold)
+        
+        results = []
+        for cluster_indices in indices:
+            face_ids = [face_data[i]['id'] for i in cluster_indices]
+            
+            # 选择置信度最高的作为代表
+            representative_idx = cluster_indices[0]
+            max_conf = 0
+            for idx in cluster_indices:
+                conf = face_data[idx].get('confidence', 0)
+                if conf > max_conf:
+                    max_conf = conf
+                    representative_idx = idx
+            
+            # 计算平均特征向量
+            avg_embedding = np.mean([embeddings[i] for i in cluster_indices], axis=0)
+            avg_embedding = avg_embedding / np.linalg.norm(avg_embedding)  # L2 归一化
+            
+            results.append({
+                'face_ids': face_ids,
+                'representative_id': face_data[representative_idx]['id'],
+                'average_embedding': avg_embedding,
+                'count': len(face_ids)
+            })
+        
+        return results
 
 
 def main():

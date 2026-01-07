@@ -97,14 +97,68 @@ class MobileNetV2SceneClassifier(SceneClassifier):
 
     def _map_to_coarse_categories(self, probs: np.ndarray) -> Dict[str, float]:
         """将 ImageNet 1000 类概率映射到 Photoye 的七个大类"""
+        # ImageNet 没有直接的 "person" 类，需要通过服饰、活动、场景间接推断
         categories = {
-            "人物": ["person", "man", "woman", "boy", "girl", "bridegroom", "bride"],
-            "动物": ["dog", "cat", "bird", "fish", "animal", "monkey", "bear", "zebra", "lion", "tiger", "elephant"],
-            "美食": ["pizza", "dish", "plate", "hotdog", "sandwich", "guacamole", "ice cream", "espresso"],
-            "建筑": ["castle", "palace", "monastery", "mosque", "church", "library", "barn", "tower", "viaduct"],
-            "室内": ["sofa", "television", "bookcase", "desk", "dining table", "bed", "wardrobe", "kitchen", "oven"],
-            "文档": ["book", "notebook", "binder", "menu", "scoreboard"],
-            "风景": ["mountain", "valley", "lakeside", "seashore", "cliff", "promontory", "volcano", "desert", "forest", "waterfall"],
+            "人物": [
+                # 服饰相关
+                "suit", "groom", "jersey", "jean", "sweatshirt", "cardigan",
+                "pajama", "kimono", "bikini", "swimming trunks", "miniskirt",
+                "hoopskirt", "sarong", "mortarboard", "stole", "wig",
+                # 人物活动/姿态相关  
+                "baseball", "basketball", "volleyball", "tennis ball", "ping-pong ball",
+                "football helmet", "ski", "snowboard", "golf ball",
+                # 人物物品
+                "lipstick", "sunglasses", "sunglass", "bow tie", "neck brace",
+                "hair spray", "perfume", "lotion", "face powder",
+            ],
+            "动物": [
+                "dog", "cat", "bird", "fish", "shark", "whale", "dolphin",
+                "monkey", "ape", "bear", "zebra", "lion", "tiger", "elephant",
+                "horse", "cow", "sheep", "pig", "goat", "rabbit", "hamster",
+                "fox", "wolf", "deer", "giraffe", "hippo", "rhino",
+                "snake", "lizard", "turtle", "frog", "spider", "scorpion",
+                "butterfly", "bee", "ant", "beetle", "dragonfly",
+                "parrot", "owl", "eagle", "hawk", "penguin", "flamingo",
+                "retriever", "shepherd", "terrier", "poodle", "bulldog", "collie",
+                "tabby", "persian", "siamese", "egyptian cat",
+            ],
+            "美食": [
+                "pizza", "hamburger", "hotdog", "sandwich", "taco", "burrito",
+                "sushi", "soup", "salad", "pasta", "noodle", "rice",
+                "ice cream", "cake", "pie", "donut", "cookie", "chocolate",
+                "coffee", "espresso", "cappuccino", "tea", "beer", "wine",
+                "guacamole", "carbonara", "meat loaf", "bagel", "pretzel",
+                "cheeseburger", "french fries", "waffle", "pancake",
+                "plate", "bowl", "cup", "mug", "goblet", "wine bottle",
+            ],
+            "建筑": [
+                "castle", "palace", "monastery", "mosque", "church", "cathedral",
+                "library", "barn", "tower", "viaduct", "bridge", "dam",
+                "skyscraper", "dome", "obelisk", "fountain", "triumphal arch",
+                "bell cote", "beacon", "lighthouse", "steel arch bridge",
+                "suspension bridge", "pier", "boathouse", "cinema", "theater",
+            ],
+            "室内": [
+                "sofa", "couch", "television", "bookcase", "desk", "table",
+                "dining table", "bed", "wardrobe", "cabinet", "chest",
+                "kitchen", "oven", "stove", "refrigerator", "microwave",
+                "chair", "throne", "studio couch", "four-poster",
+                "entertainment center", "home theater", "window shade",
+                "washbasin", "bathtub", "shower curtain", "toilet seat",
+            ],
+            "文档": [
+                "book", "notebook", "binder", "menu", "comic book", "crossword",
+                "envelope", "letter", "packet", "paper towel", "newspaper",
+                "scoreboard", "web site", "monitor", "screen", "laptop",
+                "notebook computer", "desktop computer", "keyboard", "mouse",
+            ],
+            "风景": [
+                "mountain", "alp", "valley", "lakeside", "lakeshore", "seashore",
+                "cliff", "promontory", "volcano", "desert", "sandbar",
+                "forest", "jungle", "rainforest", "waterfall", "geyser",
+                "coral reef", "sea", "ocean", "river", "stream", "pond",
+                "sky", "cloud", "sunset", "sunrise", "rainbow",
+            ],
         }
 
         if not self.labels:

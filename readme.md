@@ -1,66 +1,37 @@
-# Photoye - 本地智能照片管理助手技术规格书
+# Photoye - 本地智能照片管理助手
 
-`版本: 1.0 (阶段4)`
-`日期: 2025年08月14日`
+> **版本:** 2.1 (AI升级版)  
+> **更新日期:** 2026年01月07日
 
-## 目录
-```
-1. 项目概述
-    1.1. 项目愿景    
-    1.2. 核心问题  
-    1.3. 核心原则  
+---
 
-2. 系统架构  
-    2.1. 架构图  
-    2.2. 分层说明  
+## 1. 项目概述
 
-3. 功能模块详述 (MVP)  
-    3.1. 文件索引与监控模块  
-    3.2. AI分析核心模块  
-    3.3. 数据库模块  
-    3.4. 用户界面(UI)模块   
-    3.5. 后台任务管理模块  
-
-4. 技术栈选型
-
-5. 数据流与核心工作流程  
-    5.1. 首次初始化流程  
-    5.2. 人脸识别与标记流程  
-    5.3. 按人检索照片流程  
-
-6. 未来拓展规划 (Roadmap)
-
-7. 性能与风险考量
------
-```
-## 1\. 项目概述
-
-### 1.1. 项目愿景
+### 1.1 项目愿景
 
 打造一款以隐私保护为核心、运行于本地的、智能化的照片与视频管理工具。让每一位用户都能轻松驾驭海量的数字记忆，高效地整理、发现和重温生活中的美好瞬间。
 
-### 1.2. 核心问题
+### 1.2 核心问题
 
 本项目旨在解决现代用户面临的数字资产管理困境：
 
-  * **存储混乱:** 照片和视频散落在不同文件夹，缺乏统一管理。
-  * **检索困难:** 无法快速找到特定人物、事件或场景的照片。
-  * **利用率低:** 大量珍贵照片在存储后被遗忘，无法发挥其情感价值。
-  * **隐私担忧:** 不愿将包含家庭隐私的照片上传至公共云服务。
+- **存储混乱:** 照片和视频散落在不同文件夹，缺乏统一管理
+- **检索困难:** 无法快速找到特定人物、事件或场景的照片
+- **利用率低:** 大量珍贵照片在存储后被遗忘，无法发挥其情感价值
+- **隐私担忧:** 不愿将包含家庭隐私的照片上传至公共云服务
 
-### 1.3. 核心原则
+### 1.3 核心原则
 
-  * **本地优先 (Local-First):** 所有数据处理和存储均在用户本地设备完成，不依赖任何网络上传。
-  * **隐私至上 (Privacy-First):** 用户的照片和分析出的元数据永远属于用户自己。
-  * **非破坏性操作 (Non-Destructive):** 绝不修改、移动或删除用户的原始文件，所有管理操作通过元数据数据库实现。
-  * **用户友好 (User-Friendly):** 提供直观、流畅的操作界面，将复杂的AI技术无感地融入用户体验。
-  * **高可拓展性 (High-Extensibility):** 架构设计必须支持未来平滑地增加新功能。
+- **本地优先 (Local-First):** 所有数据处理和存储均在用户本地设备完成
+- **隐私至上 (Privacy-First):** 用户的照片和分析出的元数据永远属于用户自己
+- **非破坏性操作 (Non-Destructive):** 绝不修改、移动或删除用户的原始文件
+- **用户友好 (User-Friendly):** 提供直观、流畅的操作界面
 
-## 2\. 系统架构
+---
 
-### 2.1. 架构图
+## 2. 系统架构
 
-采用经典的多层桌面应用架构：
+### 2.1 架构图
 
 ```
 +------------------------------------------------------+
@@ -70,7 +41,7 @@
                        | (用户交互, 数据展示)
 +----------------------v-------------------------------+
 |                业务逻辑层 (Business Logic Layer)       |
-|    (应用主逻辑, 任务调度, 工作流控制 - main.py)      |
+|    (应用主逻辑, 任务调度, 工作流控制 - main.py)        |
 +----------------------+-------------------------------+
       | (调用AI分析)         | (读写元数据)
 +-----v----------------+-----v--------------------------+
@@ -81,356 +52,213 @@
 +-----v----------------+-----v--------------------------+
 |      硬件/系统层 (Hardware/System Layer)               |
 |   (CPU/GPU, ONNX RT) | (SQLite3 数据库文件)            |
-+----------------------+-------------------------------+
-                       | (读写原始文件)
-+----------------------v-------------------------------+
-|               数据存储层 (Data Storage Layer)          |
-|                 (用户照片/视频文件)                    |
 +------------------------------------------------------+
 ```
 
-### 2.2. 分层说明
-
-  * **表现层:** 基于 `PyQt6` 构建，负责所有用户能看到和操作的界面元素。
-  * **业务逻辑层:** 应用的“大脑”，负责响应用户操作，调用后台任务，协调AI引擎和数据库进行工作。
-  * **AI引擎层:** 封装所有计算机视觉模型。接收图片路径，输出分析结果（分类、人脸坐标、特征向量等）。
-  * **数据服务层:** 负责与 `SQLite` 数据库进行所有交互，提供标准化的数据读写接口。
-  * **数据存储层:** 指用户的硬盘，存放着原始的照片/视频文件和 `SQLite` 数据库文件。
-
-## 3\. 功能模块详述 (MVP)
-
-### 3.1. 文件索引与监控模块
-
-  * **首次索引:** 递归扫描用户指定的根目录，将所有支持的图片格式（`.jpg`, `.jpeg`, `.png`, `.bmp` 等）的文件路径存入数据库，并标记为“待分析”。
-  * **增量更新:** 定期或在应用启动时检查目录，发现新增文件则加入索引，发现被删除文件则更新数据库状态。
-
-### 3.2. AI分析核心模块
-
-此模块是项目的技术核心，包含一组独立的AI模型。为提高效率和跨平台兼容性，所有模型建议使用 `ONNX` 格式。
-
-  * **3.2.1. 场景分类与初步归类**
-    * **技术:** 使用预训练的图像分类模型（当前默认 `MobileNetV2` ONNX 版，可替换为 `EfficientNet-Lite` 等）。对需要更细粒度或零样本标签的场景，可以切换为 `OpenCLIP` 零样本分类器（Vision/Text 双 ONNX + tokenizer）。
-      * **流程:** 输入一张图片，输出分类标签。
-      * **输出:** "风景", "建筑", "动物", "文档", "室内", "美食" 等。无人脸的照片直接归为此类。
-  * **3.2.2. 人脸检测模块**
-      * **技术:** 使用高性能的人脸检测模型，如 `YOLOv8-Face` 或 `SCRFD`。
-      * **流程:** 输入一张图片，输出所有检测到的人脸的边界框坐标 `[x1, y1, x2, y2]` 和置信度。
-      * **输出:** 根据检测到的人脸数量，为照片打上 “单人照” (1个) 或 “合照” (\>1个) 的初步标签。
-  * **3.2.3. 人脸识别模块**
-      * **技术:** 使用先进的人脸识别模型，如 `ArcFace` (推荐) 或 `FaceNet`。
-      * **流程:** 将从上一步裁剪出的人脸图像输入此模型。
-      * **输出:** 一个512维的浮点数数组（`Face Embedding`），即该人脸的唯一“数字签名”。
-
-  * **3.2.4. 模型配置档 (Profiles)**
-    * **说明:** 在 `model_profiles.py` 中定义了 `speed / balanced / accuracy` 三种组合。
-      * `speed`: 纯 OpenCV 管线，`YuNet + SFace + MobileNetV2`，依赖轻、响应快。
-      * `balanced`: 默认配置，`YuNet + dlib + MobileNetV2`，兼顾速度与精度。
-      * `accuracy`: `dlib + dlib + MobileNetV2`，更耗时但对极端人脸角度更稳定。
-      * `zeroshot`: `YuNet + SFace + OpenCLIP`，牺牲速度换取零样本/细粒度标签能力。
-    * **如何切换:**
-      * 运行前设置环境变量 `PHOTOYE_MODEL_PROFILE`，例如 `set PHOTOYE_MODEL_PROFILE=accuracy`。
-      * 或在代码中实例化 `AIAnalyzer(model_profile="speed")` 进行覆盖。
-
-### 3.3. 数据库模块
-
-  * **技术:** `SQLite3`
-  * **数据库文件:** `photoye_library.db`
-  * **表结构设计:**
-    ```sql
-    -- 照片表
-    CREATE TABLE IF NOT EXISTS photos (
-        id INTEGER PRIMARY KEY,
-        filepath TEXT NOT NULL UNIQUE,          -- 文件绝对路径
-        filesize INTEGER,                       -- 文件大小
-        created_at TEXT,                        -- EXIF拍摄日期
-        category TEXT,                          -- 初步分类: 风景, 单人照, 合照
-        status TEXT DEFAULT 'pending'           -- 处理状态: pending, processing, done
-    );
-
-    -- 人物表
-    CREATE TABLE IF NOT EXISTS persons (
-        id INTEGER PRIMARY KEY,
-        name TEXT NOT NULL UNIQUE,              -- 用户命名的人物姓名
-        cover_face_id INTEGER                   -- 可选用作封面的人脸ID
-    );
-
-    -- 人脸数据表
-    CREATE TABLE IF NOT EXISTS faces (
-        id INTEGER PRIMARY KEY,
-        photo_id INTEGER NOT NULL,              -- 关联的照片ID
-        person_id INTEGER,                      -- 关联的人物ID (未命名时为NULL)
-        bbox TEXT NOT NULL,                     -- 边界框坐标 (JSON: [x1,y1,x2,y2])
-        embedding BLOB NOT NULL,                -- 512维人脸特征向量
-        FOREIGN KEY (photo_id) REFERENCES photos(id) ON DELETE CASCADE,
-        FOREIGN KEY (person_id) REFERENCES persons(id) ON DELETE SET NULL
-    );
-
-    -- 标签表
-    CREATE TABLE IF NOT EXISTS tags (
-        id INTEGER PRIMARY KEY,
-        name TEXT NOT NULL UNIQUE
-    );
-
-    -- 照片与标签关联表 (多对多)
-    CREATE TABLE IF NOT EXISTS photo_tags (
-        photo_id INTEGER,
-        tag_id INTEGER,
-        PRIMARY KEY (photo_id, tag_id),
-        FOREIGN KEY (photo_id) REFERENCES photos(id) ON DELETE CASCADE,
-        FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE
-    );
-    ```
-
-### 3.4. 用户界面(UI)模块
-
-  * **主窗口:** 左侧为导航/筛选区，右侧为照片缩略图展示区。
-  * **导航筛选区:**
-      * **视图切换:** "图库"、"人物"、"地点"、"时间" 等。
-      * **人物列表:** 展示所有已命名的人物，点击可筛选。
-      * **分类/标签:** 按“风景”、“合照”或自定义标签筛选。
-  * **照片展示区:**
-      * 无限滚动加载的缩略图网格。
-      * 双击可查看高清大图，并显示详细信息（包含人物、标签等）。
-  * **人物管理界面:**
-      * 以聚合形式展示所有未命名的人脸。
-      * 提供输入框，让用户为一组相似的人脸命名。
-      * 允许合并/拆分识别错误的人物。
-
-### 3.5. 后台任务管理模块
-
-  * **技术:** `PyQt6.QtCore.QThread`
-  * **职责:** 所有耗时操作（文件索引、AI分析）都必须在此线程中执行，避免主UI线程阻塞。
-  * **通信:** 使用 `PyQt` 的信号与槽机制 (signals & slots)，将后台任务的进度（如“已分析 500/2500 张”）和结果安全地传递给UI线程进行更新。
-
-## 4\. 技术栈选型
-
-| 类别 | 技术/库 | 理由 |
-| :--- | :--- | :--- |
-| **编程语言** | `Python 3.10+` | 强大的AI生态，胶水语言特性，开发效率高。 |
-| **GUI框架** | `PyQt6` | 功能强大，跨平台表现优秀，拥有成熟的信号/槽机制。 |
-| **AI模型运行** | `ONNX Runtime` | 微软出品，高性能，跨平台，支持CPU和GPU(CUDA/DirectML)。 |
-| **人脸检测** | `YOLOv8-Face` (ONNX) | 速度与精度的卓越平衡。 |
-| **人脸识别** | `ArcFace` (ONNX) | 目前业界最顶尖的识别算法之一，准确率高。 |
-| **图像处理** | `Pillow`, `OpenCV-Python` | 基础图像读写、裁剪和预处理。 |
-| **科学计算** | `NumPy` | 高效处理AI模型输出的数组（特征向量）。 |
-| **数据库** | `SQLite3` (Python内置) | 轻量、无服务器、单个文件，完美契合桌面应用。 |
-| **应用打包** | `PyInstaller` | 将Python项目打包成独立的可执行文件，方便分发。 |
-
-## 5\. 数据流与核心工作流程
-
-### 5.1. 首次初始化流程
-
-1.  用户启动应用，UI界面出现。
-2.  用户点击“选择照片库”按钮，选择一个根目录。
-3.  **[UI线程]** 将目录路径发送给 **[业务逻辑层]**。
-4.  **[业务逻辑层]** 启动一个 **[后台任务线程]**，开始执行文件索引。
-5.  **[后台线程]** 递归扫描目录，将文件路径写入 `photos` 表，状态为 `pending`。同时通过信号向UI更新进度。
-6.  索引完成后，**[后台线程]** 开始批量分析 `pending` 状态的照片。
-7.  对于每张照片，依次送入**AI引擎**的**分类、检测、识别模块**，并将结果更新至数据库。
-8.  **[UI线程]** 实时接收分析结果，动态刷新照片的缩略图和信息。
-
-### 5.2. 人脸识别与标记流程
-
-1.  用户进入“人物”管理界面。
-2.  **[UI线程]** 请求 **[数据服务层]** 查询 `faces` 表中所有 `person_id` 为 `NULL` 的记录。
-3.  **[业务逻辑层]** 对这些未命名人脸的特征向量进行在线聚类。
-4.  **[UI线程]** 将聚类后的结果（多组相似的人脸）展示给用户。
-5.  用户为其中一组人脸输入名字，如“宝宝”，点击确认。
-6.  **[UI线程]** 将该组人脸的ID列表和名字“宝宝”发送给 **[业务逻辑层]**。
-7.  **[业务逻辑层]** 调用 **[数据服务层]**：
-    a. 在 `persons` 表中创建“宝宝”条目（如果不存在）。
-    b. 更新 `faces` 表，将这些ID的 `person_id` 字段设置为“宝宝”的ID。
-8.  UI界面刷新，该组人脸消失，左侧人物列表出现“宝宝”。
-
-### 5.3. 按人检索照片流程
-
-1.  用户在左侧人物列表点击“宝宝”。
-2.  **[UI线程]** 将“宝宝”的 `person_id` 发送给 **[业务逻辑层]**。
-3.  **[业务逻辑层]** 调用 **[数据服务层]** 执行SQL查询，找出所有 `faces` 表中 `person_id` 对应“宝宝”的 `photo_id`。
-4.  **[数据服务层]** 返回去重后的照片ID列表。
-5.  **[UI线程]** 根据这些ID，在照片展示区仅显示对应的照片缩略图。
-
-## 6\. 未来拓展规划 (Roadmap)
-
-此架构为以下功能提供了良好的拓展基础：
-
-  * **V1.1 - 智能标签与搜索:**
-      * 引入通用的物体检测模型（如 `YOLOv8`），自动为照片打上“猫”、“汽车”、“沙滩”等标签，并存入 `tags` 表。
-      * 实现基于标签的布尔逻辑搜索（如 “宝宝” AND “沙滩”）。
-  * **V1.2 - 照片回忆推送:**
-      * 开发一个后台服务或定时任务。
-      * 每天检查数据库中 `photos` 表的 `created_at` 字段，匹配“历史上的今天”。
-      * 通过系统通知API向用户推送精选的照片回忆。
-  * **V1.3 - 视频整理支持:**
-      * 引入 `FFmpeg` 库。
-      * 实现视频关键帧提取功能。
-      * 将提取出的关键帧图片送入现有的**AI分析核心模块**，从而实现对视频内容的分析和打标。
-  * **V2.0 - 地理信息聚合:**
-      * 解析照片的 `EXIF` 信息中的GPS坐标。
-      * 在UI中集成地图组件（如 `Folium`），将照片在地图上进行可视化展示和聚合。
-
-## 7\. 性能与风险考量
-
-  * **性能瓶颈:**
-      * **首次全量分析:** 对于数万张照片，首次分析可能耗时数小时。
-      * **解决方案:** 必须提供清晰的进度反馈；优先利用GPU进行AI推理（通过 `ONNX Runtime` 的 `CUDA` 或 `DirectML` 执行提供程序）；对特征向量的比对采用近似最近邻搜索算法（如 `FAISS`）。
-  * **风险评估:**
-      * **模型准确率:** AI无法做到100%准确，需提供方便的用户修正机制（如合并人物、修改标签）。
-      * **跨平台兼容性:** `PyQt6` 和 `ONNX Runtime` 提供了良好的跨平台性，但在打包和分发时仍需在各平台（Windows, macOS, Linux）上充分测试。
-      * **依赖管理:** 项目依赖较多，需使用 `pip` 的 `requirements.txt` 或 `Poetry` 等工具进行严格的版本管理.
-
-
-
-## 8\. 敏捷开发路线图 (Agile Development Roadmap)
-
-本路线图遵循敏捷开发思想，将整个项目分解为多个可迭代、可测试的开发阶段（Sprint）。每个阶段都将产出一个或多个核心组件，并以实现一个可验证的功能为目标。建议使用 `Git`进行版本控制，每个阶段完成时创建一个新的分支或标签。
-
------
-
-### **阶段 0: 环境搭建与地基工程 (Sprint 0)**
-
-**目标:** 准备好开发所需的一切，并创建一个可以运行的“空壳”应用。
-
-  * **任务:**
-
-    1.  **初始化项目结构:** 创建项目根目录 `Photoye`，并在其中建立以下文件和文件夹结构：
-        ```
-        Photoye/
-        ├── main.py             # 应用主入口和UI
-        ├── database.py         # 数据库交互模块
-        ├── analyzer.py         # AI分析模块
-        ├── worker.py           # 后台工作线程模块
-        ├── models/             # 存放ONNX模型文件
-        └── tests/              # 存放单元测试脚本
-        ```
-    2.  **设置Python虚拟环境:** 使用 `venv` 或 `conda` 创建一个独立的Python环境。
-        ```bash
-        python -m venv venv
-        source venv/bin/activate  # on Windows: venv\Scripts\activate
-        ```
-    3.  **安装基础依赖:** 现阶段只安装非AI的基础库。
-        ```bash
-        pip install PyQt6 numpy Pillow
-        ```
-    4.  **实现数据库初始化:** 在 `database.py` 中，编写一个 `init_db()` 函数，该函数执行 `CREATE TABLE` 语句，创建在第3.3节中设计的所有表。
-    5.  **创建主窗口:** 在 `main.py` 中，使用 `PyQt6` 创建一个简单的主窗口，可以包含一个菜单栏和一个状态栏。程序启动时应能显示这个空窗口。
-
-  * **阶段性成果 (可测试):**
-
-      * 运行 `python database.py` 可以生成一个空的 `photoye_library.db` 文件，且表结构正确。
-      * 运行 `python main.py` 可以成功弹出一个空白的应用程序窗口。
-
------
-
-### **阶段 1: 核心数据库与文件索引 (Sprint 1)**
-
-**目标:** 实现应用与本地文件系统的连接，将照片信息录入数据库。
-
-  * **任务:**
-
-    1.  **完善数据库模块:** 在 `database.py` 中，实现核心的CRUD函数，如 `add_photo()`、`get_all_photos()`、`is_photo_exist()` 等。
-    2.  **实现后台工作线程:** 在 `worker.py` 中，定义一个继承自 `QThread` 的 `ScanWorker` 类。
-    3.  **开发文件索引逻辑:** 在 `ScanWorker` 中，实现递归扫描指定目录的逻辑。对于每个找到的图片，调用 `database.py` 中的函数将其路径写入数据库。
-    4.  **UI交互:** 在 `main.py` 的主窗口中，添加一个 "选择目录" 的按钮。点击后，允许用户选择文件夹，然后实例化 `ScanWorker` 并启动后台线程开始扫描。
-    5.  **进度反馈:** `ScanWorker` 在扫描过程中，通过 `PyQt` 的信号(signal)机制，将进度（如“已发现 N 张照片”）发送给主窗口，主窗口的状态栏(status bar)负责显示该进度。
-
-  * **阶段性成果 (可测试):**
-
-      * 应用启动后，点击按钮选择一个包含照片的文件夹。
-      * UI界面不会卡死，状态栏会实时显示扫描进度。
-      * 扫描结束后，打开 `photoye_library.db` 文件，可以看到 `photos` 表中已经包含了所有照片的正确文件路径。
-
------
-
-### **阶段 2: AI引擎的独立测试 (Sprint 2)**
-
-**目标:** 封装并验证AI模型推理的正确性，使其成为一个可靠的黑盒。
-
-  * **任务:**
-
-    1.  **下载模型:** 从开源社区下载预训练好的 `YOLOv8-Face` 和 `ArcFace` 的 `.onnx` 模型文件，放入 `models/` 目录。
-    2.  **安装AI依赖:**
-        ```bash
-        pip install onnxruntime opencv-python scikit-learn
-        # 如果有NVIDIA显卡并已安装CUDA，建议安装GPU版本以获得巨大性能提升
-        # pip install onnxruntime-gpu
-        ```
-    3.  **封装AI分析器:** 在 `analyzer.py` 中，创建 `AIAnalyzer` 类。
-          * `__init__()`: 加载ONNX模型到内存。
-          * `detect_faces(image_path)`: 接收图片路径，使用 `OpenCV` 读取图片，预处理后送入YOLO模型，返回人脸边界框列表。
-          * `get_face_embedding(image, bbox)`: 接收原始图片和一个人脸边界框，裁剪出人脸，预处理后送入ArcFace模型，返回512维的 `NumPy` 数组。
-    4.  **编写单元测试:** 在 `tests/test_analyzer.py` 中，编写测试脚本。准备一两张包含人脸的测试图片，调用 `AIAnalyzer` 的方法，并 `print` 输出结果（检测到的人脸数量、每个embedding的形状等）来验证模块是否正常工作。
-
-  * **阶段性成果 (可测试):**
-
-      * 直接运行 `python tests/test_analyzer.py`，可以看到正确的输出，证明AI模型加载和推理流程没有问题。**此阶段完全不涉及UI**。
-      * ✅ 已完成：AI分析器模块实现
-      * ✅ 已完成：单元测试编写和通过
-
------
-
-### **阶段 3: 打通完整分析流水线 (Sprint 3)**
-
-**目标:** 将文件索引与AI分析两个模块连接起来，实现对照片的全自动分析。
-
-  * **任务:**
-
-    1.  **扩展后台任务:** 修改 `worker.py` 中的 `ScanWorker`（或创建一个新的 `AnalysisWorker`）。使其在索引完一张照片后，立即调用 `analyzer.py` 中的 `AIAnalyzer` 实例。
-    2.  **执行完整分析:** 对每张照片，调用 `detect_faces()`。如果检测到人脸，则对每个人脸调用 `get_face_embedding()`。
-    3.  **数据入库:** 将分析结果（照片的初步分类、每个人脸的边界框`bbox`和特征向量`embedding`）通过 `database.py` 中的函数，更新到 `photos` 表和 `faces` 表。
-    4.  **状态更新:** 确保 `photos` 表的 `status` 字段在处理过程中和完成后被正确更新（`processing` -> `done`）。
-
-  * **阶段性成果 (可测试):**
-
-      * 选择一个较小的照片文件夹进行分析。
-      * 分析完成后，检查数据库。`photos` 表的 `category` 和 `status` 字段被更新。`faces` 表中包含了所有检测到的人脸数据，包括其对应的 `photo_id` 和 `embedding` (BLOB数据)。
-      * ✅ 已完成：完整分析流水线实现
-      * ✅ 已完成：单元测试编写和通过
-
------
-
-### **阶段 4: 结果展示与UI交互 (Sprint 4)**
-
-**目标:** 让用户能够在界面上看到分析结果，并进行简单的交互。
-
-  * **任务:**
-
-    1.  **创建缩略图视图:** 在 `main.py` 的主窗口中，使用 `QListWidget` 或 `QTableView` 作为照片展示区。
-    2.  **异步加载:** 实现一个缩略图加载器，当照片进入视野时，在后台线程中生成并缓存缩略图，然后显示在UI上，避免UI卡顿。
-    3.  **显示照片:** 程序启动时，默认从数据库加载所有照片，并在视图中显示它们的缩略图。
-    4.  **实现筛选功能:** 在UI上添加"单人照"、"合照"、"风景"等按钮。点击按钮后，从数据库查询相应 `category` 的照片，并刷新缩略图视图。
-    5.  **实现详情展示:** 双击缩略图，弹出一个新窗口，显示高清大图，并在图上用矩形框把已检测到的人脸画出来。
-
-  * **阶段性成果 (可测试):**
-
-      * 应用能够流畅地展示成百上千张照片的缩略图。
-      * 筛选按钮功能正常。
-      * 双击照片可以清晰地看到人脸被框出，证明检测结果被正确利用。
-      * ✅ 已完成：缩略图视图创建
-      * ✅ 已完成：筛选功能实现
-      * ✅ 已完成：UI界面测试通过
-      * ✅ 已完成：应用程序可以正常启动
-      * 当前状态：继续完善功能
-
------
-
-### **阶段 5 & 6: 人脸聚类、命名与检索 (Sprint 5 & 6)**
-
-**目标:** 实现项目的核心亮点功能，完成MVP闭环。
-
-  * **任务:**
-
-    1.  **实现聚类算法:** 在 `analyzer.py` 或一个新模块中，编写一个 `cluster_faces()` 函数。该函数从数据库读取所有未命名人脸的 `embedding`，使用 `scikit-learn` 的 `DBSCAN` 算法进行聚类。
-    2.  **开发人物管理UI:** 创建一个新的窗口或面板，用于展示聚类结果。每个类别显示几张代表性的人脸缩略图。
-    3.  **实现命名逻辑:** 为每个聚类提供一个文本框和“命名”按钮。用户输入名字后，程序在 `persons` 表创建条目，并更新 `faces` 表中所有属于该聚类的人脸的 `person_id`。
-    4.  **开发按人检索:** 在主窗口左侧添加一个列表，显示所有已命名的人物。
-    5.  **实现检索逻辑:** 点击人物姓名后，查询数据库，找出所有包含该人物的照片ID，并刷新主窗口的缩略图视图。
-
-  * **阶段性成果 (可测试):**
-
-      * “人物管理”界面能正确地将同一个人的照片聚合在一起。
-      * 命名后，该人物会从“未命名”中消失，并出现在主窗口的人物列表中。
-      * 在主窗口点击人物姓名，可以准确地筛选出所有包含该人物的照片。
-      * **至此，项目的核心MVP功能已全部完成！**
-
-### 后续步骤
+### 2.2 项目文件结构
+
+```
+Photoye/
+├── main.py                 # 应用主入口和UI (PyQt6)
+├── database.py             # 数据库交互模块 (SQLite3)
+├── analyzer.py             # AI分析模块 (统一调度)
+├── worker.py               # 后台工作线程模块
+├── model_profiles.py       # 模型配置档定义
+├── run.py                  # 快速启动脚本
+├── start_photoye.bat       # Windows批处理启动
+├── requirements.txt        # Python依赖
+├── models/                 # 模型适配器代码
+│   ├── opencv_yunet_detector.py    # YuNet人脸检测
+│   ├── opencv_sface_recognizer.py  # SFace人脸识别
+│   ├── dlib_detector.py            # Dlib检测与识别
+│   ├── mobilenetv2_classifier.py   # MobileNetV2场景分类
+│   ├── openclip_zero_shot.py       # OpenCLIP零样本分类
+│   ├── model_interfaces.py         # 模型接口定义
+│   ├── download_models.py          # 模型下载脚本
+│   └── models/                     # ONNX模型文件目录
+└── tests/                  # 单元测试
+    ├── test_analyzer.py
+    ├── test_models.py
+    ├── test_stage1.py
+    ├── test_stage3.py
+    ├── test_stage4.py
+    └── test_images/        # 测试图片
+```
+
+---
+
+## 3. 功能模块
+
+### 3.1 AI模型清单
+
+项目集成的模型文件（位于 `models/models/` 目录）：
+
+**场景理解模型：**
+| 模型文件 | 用途 | 来源 | 状态 |
+|---------|------|------|------|
+| `mobileclip_s0.onnx` | MobileCLIP 视觉编码器 (512维) | Apple | 🔄 升级中 |
+| `mobileclip_text.onnx` | MobileCLIP 文本编码器 | Apple | 🔄 升级中 |
+| `openclip_vitb32_vision.onnx` | OpenCLIP ViT-B/32 视觉编码器 | OpenCLIP | ✅ 可用 |
+| `openclip_vitb32_text.onnx` | OpenCLIP ViT-B/32 文本编码器 | OpenCLIP | ✅ 可用 |
+| `image_classification_mobilenetv2_2022apr.onnx` | MobileNetV2 分类 (旧版) | OpenCV Zoo | ⚠️ 废弃 |
+
+**人脸识别模型：**
+| 模型文件 | 用途 | 来源 | 状态 |
+|---------|------|------|------|
+| `retinaface_mobile_0.25.onnx` | RetinaFace 人脸检测 | InsightFace | 🔄 升级中 |
+| `arcface_w600k_r50.onnx` | ArcFace 人脸识别 (512维) | InsightFace | 🔄 升级中 |
+| `face_detection_yunet_2023mar.onnx` | YuNet 人脸检测 (旧版) | OpenCV Zoo | ⚠️ 废弃 |
+| `face_recognition_sface_2021dec.onnx` | SFace 人脸识别 (旧版) | OpenCV Zoo | ⚠️ 废弃 |
+| `dlib_face_recognition_resnet_model_v1.dat` | Dlib 人脸识别 (旧版) | Dlib | ⚠️ 废弃 |
+
+### 3.2 模型配置档 (Profiles)
+
+在 `model_profiles.py` 中定义预设组合：
+
+| 配置名 | 人脸检测 | 人脸识别 | 场景理解 | 特点 |
+|--------|---------|---------|---------|------|
+| `legacy` | YuNet | SFace | MobileNetV2 | 旧版兼容 |
+| `balanced` | RetinaFace | ArcFace | MobileCLIP | **默认**，平衡速度与精度 |
+| `accuracy` | RetinaFace | ArcFace | OpenCLIP | 最高精度 |
+
+**切换方式：**
+```bash
+# 方式1: 环境变量
+set PHOTOYE_MODEL_PROFILE=accuracy
+
+# 方式2: 代码中指定
+analyzer = AIAnalyzer(model_profile="balanced")
+```
+
+### 3.3 后台工作线程
+
+| Worker 类 | 功能 | 状态 |
+|-----------|------|------|
+| `ThumbnailWorker` | 异步生成缩略图，避免UI卡顿 | ✅ 已实现 |
+| `ScanWorker` | 扫描目录 + 自动场景分类 | ✅ 已实现 |
+| `FaceAnalysisWorker` | 人脸检测与特征提取（独立于导入） | ✅ 已实现 |
+| `AnalysisWorker` | 批量照片分析 | ⚠️ 占位 |
+| `ClusteringWorker` | 人脸聚类 | ⚠️ 占位 |
+
+### 3.4 数据库结构
+
+使用 SQLite3，数据库文件：`photoye_library.db`
+
+```sql
+-- 照片表 (V2.1 升级版)
+CREATE TABLE photos (
+    id INTEGER PRIMARY KEY,
+    filepath TEXT NOT NULL UNIQUE,
+    filesize INTEGER,
+    created_at TEXT,
+    category TEXT,                    -- 语义搜索结果缓存
+    embedding BLOB,                   -- CLIP 512维特征向量 (新增)
+    status TEXT DEFAULT 'pending'     -- pending/processing/done
+);
+
+-- 人物表
+CREATE TABLE persons (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    cover_face_id INTEGER
+);
+
+-- 人脸数据表 (V2.1 升级版)
+CREATE TABLE faces (
+    id INTEGER PRIMARY KEY,
+    photo_id INTEGER NOT NULL,
+    person_id INTEGER,               -- NULL表示未命名，-1表示噪声点
+    bbox TEXT NOT NULL,              -- JSON: [x1,y1,x2,y2]
+    landmarks TEXT,                  -- JSON: 5点关键点坐标 (新增)
+    embedding BLOB NOT NULL,         -- ArcFace 512维特征向量
+    confidence REAL DEFAULT 0.0,
+    is_noise INTEGER DEFAULT 0,      -- DBSCAN噪声标记 (新增)
+    FOREIGN KEY (photo_id) REFERENCES photos(id) ON DELETE CASCADE,
+    FOREIGN KEY (person_id) REFERENCES persons(id) ON DELETE SET NULL
+);
+
+-- 向量索引表 (可选，用于FAISS)
+CREATE TABLE vector_index_meta (
+    id INTEGER PRIMARY KEY,
+    index_type TEXT,                 -- 'photo_clip' / 'face_arcface'
+    last_updated TEXT,
+    count INTEGER
+);
+```
+
+---
+
+## 4. 技术栈
+
+| 类别 | 技术/库 | 版本要求 |
+|------|---------|---------|
+| 编程语言 | Python | 3.10+ |
+| GUI框架 | PyQt6 | ≥6.4.0 |
+| AI推理 | ONNX Runtime | ≥1.15.0 |
+| 图像处理 | OpenCV-Contrib | ≥4.7.0 |
+| 人脸识别 | Dlib | ≥19.24.2 |
+| 科学计算 | NumPy | ≥1.21.0 |
+| 图像读取 | Pillow | ≥9.0.0 |
+| 分词器 | tokenizers | ≥0.13.0 |
+| 数据库 | SQLite3 | Python内置 |
+| 向量搜索 | FAISS | ≥1.7.0 (可选) |
+| 聚类 | scikit-learn | ≥1.0.0 |
+
+---
+
+## 5. 快速开始
+
+### 5.1 安装依赖
+
+```bash
+# 创建虚拟环境
+conda create -n photoye python=3.10
+conda activate photoye
+
+# 安装依赖
+pip install -r requirements.txt
+
+# 如果有NVIDIA GPU
+pip install onnxruntime-gpu
+```
+
+### 5.2 下载模型
+
+```bash
+python models/download_models.py
+```
+
+### 5.3 运行应用
+
+```bash
+python main.py
+# 或
+python run.py
+# 或 Windows
+start_photoye.bat
+```
+
+---
+
+## 6. 测试
+
+```bash
+# 运行所有测试
+python -m pytest tests/
+
+# 运行单个测试
+python tests/test_models.py
+python tests/test_analyzer.py
+```
+
+---
+
+## 7. 开发文档
+
+详细的开发规划、任务进度和技术方案请参阅：**[DEVELOPMENT.md](DEVELOPMENT.md)**
+
+---
+
+## 许可证
+
+本项目仅供学习和个人使用。

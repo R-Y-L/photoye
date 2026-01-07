@@ -59,6 +59,7 @@ class OpenCLIPZeroShotClassifier(SceneClassifier):
         self._vision_input_name: Optional[str] = None
         self._text_input_names: List[str] = []
         self._logit_scale = 100.0  # 可调节，值越大分布越尖锐
+        self._vision_inputs = []
 
         self._init_resources()
 
@@ -75,7 +76,8 @@ class OpenCLIPZeroShotClassifier(SceneClassifier):
         try:
             self.vision_session = ort.InferenceSession(str(self.vision_path), providers=["CPUExecutionProvider"])
             self.text_session = ort.InferenceSession(str(self.text_path), providers=["CPUExecutionProvider"])
-            self._vision_input_name = self.vision_session.get_inputs()[0].name
+            self._vision_inputs = self.vision_session.get_inputs()
+            self._vision_input_name = self._vision_inputs[0].name
             self._text_input_names = [inp.name for inp in self.text_session.get_inputs()]
         except Exception as exc:  # noqa: BLE001
             print(f"⚠️ 无法创建 OpenCLIP onnx session: {exc}")
@@ -112,35 +114,58 @@ class OpenCLIPZeroShotClassifier(SceneClassifier):
             print(f"图片不存在: {image_path}")
             return {}
 
-        if not (self.vision_session and self.text_session and self.tokenizer):
+        if not (self.vision_session and self.tokenizer):
             return self._mock_classification()
 
-        image_feat = self._encode_image(image_path)
-        text_feats, labels = self._encode_prompts()
-        if image_feat is None or text_feats is None:
+        # 这个模型是融合模型，同时需要图像和文本输入
+        result = self._encode_image_with_text(image_path)
+        if result is None:
             return self._mock_classification()
-
-        sims = (text_feats @ image_feat.reshape(-1, 1)).squeeze(-1)
-        sims *= self._logit_scale
-        probs = self._softmax(sims)
-        return {label: float(prob) for label, prob in zip(labels, probs)}
+        
+        return result
 
     # ------------------------------------------------------------------
-    def _encode_image(self, image_path: str) -> Optional[np.ndarray]:
+    def _encode_image_with_text(self, image_path: str) -> Optional[Dict[str, float]]:
+        """融合模型：同时输入图像和所有文本提示，直接获取相似度"""
         try:
+            # 准备图像
             image = Image.open(image_path).convert("RGB")
             image = image.resize((224, 224))
             img = np.array(image).astype(np.float32) / 255.0
             mean = np.array([0.48145466, 0.4578275, 0.40821073], dtype=np.float32)
             std = np.array([0.26862954, 0.26130258, 0.27577711], dtype=np.float32)
             img = (img - mean) / std
-            img = img.transpose(2, 0, 1)[None, ...]
-            inputs = {self._vision_input_name: img}
-            vision_out = self.vision_session.run(None, inputs)[0]
-            feat = vision_out[0]
-            return feat / (np.linalg.norm(feat) + 1e-6)
-        except Exception as exc:  # noqa: BLE001
-            print(f"OpenCLIP 图像编码失败: {exc}")
+            img = img.transpose(2, 0, 1)[None, ...]  # [1, 3, 224, 224]
+            
+            # 准备文本
+            labels = list(self._label_prompts.keys())
+            prompts = [self._label_prompts[label] for label in labels]
+            
+            tokenized = [self._encode_single_prompt(p) for p in prompts]
+            input_ids = np.stack([tk[0] for tk in tokenized]).astype(np.int64)  # [N, 77]
+            attention = np.stack([tk[1] for tk in tokenized]).astype(np.int64)  # [N, 77]
+            
+            # 构造融合输入
+            inputs = {
+                "pixel_values": img,
+                "input_ids": input_ids,
+                "attention_mask": attention,
+            }
+            
+            # 运行推理，获取 logits_per_image
+            outputs = self.vision_session.run(None, inputs)
+            # 输出顺序: logits_per_image, logits_per_text, text_embeds, image_embeds
+            logits_per_image = outputs[0]  # [1, N]
+            
+            # softmax 转换为概率
+            probs = self._softmax(logits_per_image[0])
+            
+            return {label: float(prob) for label, prob in zip(labels, probs)}
+            
+        except Exception as exc:
+            print(f"OpenCLIP 推理失败: {exc}")
+            import traceback
+            traceback.print_exc()
             return None
 
     def _encode_prompts(self) -> tuple[Optional[np.ndarray], List[str]]:

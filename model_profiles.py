@@ -43,6 +43,20 @@ MODEL_PROFILES: Dict[str, Dict[str, str]] = {
         "classifier": "openclip",
         "description": "零样本组合：YuNet + SFace + OpenCLIP",
     },
+    # InsightFace pipeline: RetinaFace + ArcFace (512-dim) for best face recognition.
+    "insightface": {
+        "detector": "insightface",
+        "recognizer": "insightface",
+        "classifier": "mobilenetv2",
+        "description": "InsightFace 组合：RetinaFace + ArcFace (512维)",
+    },
+    # Best quality: InsightFace faces + OpenCLIP semantic search.
+    "best": {
+        "detector": "insightface",
+        "recognizer": "insightface", 
+        "classifier": "openclip",
+        "description": "最佳组合：InsightFace + OpenCLIP 语义搜索",
+    },
 }
 
 

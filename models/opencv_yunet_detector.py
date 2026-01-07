@@ -37,7 +37,7 @@ class OpenCVYuNetDetector(FaceDetector):
                 model=str(self.model_path),
                 config="",
                 input_size=(width, height),
-                score_threshold=0.9,
+                score_threshold=0.5,
                 nms_threshold=0.3,
                 top_k=5000,
             )

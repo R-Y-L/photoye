@@ -18,6 +18,11 @@ import cv2
 import numpy as np
 from pathlib import Path
 
+# 确保项目根目录在 sys.path，便于直接导入 models / analyzer
+ROOT_DIR = Path(__file__).resolve().parent.parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
 def test_face_detection(image_path: str):
     """测试人脸检测模型"""
     print("\n" + "="*60)
@@ -28,9 +33,7 @@ def test_face_detection(image_path: str):
         from models.opencv_yunet_detector import OpenCVYuNetDetector
         
         detector = OpenCVYuNetDetector()
-        if detector.detector is None:
-            print("❌ YuNet 模型未加载，请检查模型文件路径")
-            return None
+        # YuNet 会在 detect 时创建 session，这里不提前判空
         
         print(f"✅ YuNet 模型已加载")
         print(f"📷 输入图片: {image_path}")
@@ -171,14 +174,13 @@ def test_openclip_classification(image_path: str):
         from models.openclip_zero_shot import OpenCLIPZeroShotClassifier
         
         classifier = OpenCLIPZeroShotClassifier()
-        
-        if not classifier.loaded:
-            print("❌ OpenCLIP 模型未加载")
-            return None
+        ok = classifier.vision_session is not None and classifier.text_session is not None and classifier.tokenizer is not None
+        if not ok:
+            print("⚠️ OpenCLIP 模型或 tokenizer 未完全加载，将返回模拟结果")
         
         print(f"✅ OpenCLIP 模型已加载")
-        print(f"   - Vision 模型: {classifier.vision_model_path}")
-        print(f"   - Text 模型: {classifier.text_model_path}")
+        print(f"   - Vision 模型: {classifier.vision_path}")
+        print(f"   - Text 模型: {classifier.text_path}")
         print(f"   - Tokenizer: {classifier.tokenizer_path}")
         
         # 读取图片

@@ -4,31 +4,117 @@
 Photoye - 后台任务管理模块
 负责处理所有耗时操作，避免UI线程阻塞
 
-版本: 1.0 (阶段3)
+版本: 2.1 (CLIP Embedding 支持)
 """
 
 import os
 import time
 from pathlib import Path
-from typing import List, Callable, Optional
-from PyQt6.QtCore import QThread, pyqtSignal
+from typing import List, Callable, Optional, Dict, Any
+from PyQt6.QtCore import QThread, pyqtSignal, QObject
+from PyQt6.QtGui import QImage, QPixmap
 from database import (
     add_photo,
+    add_photos_batch,
     is_photo_exist,
     update_photo_status,
     add_face_data,
+    add_faces_batch,
     get_photo_status,
+    get_photos_without_faces,
+    update_photo_embedding_by_path,
+    batch_update_photo_embeddings,
+    get_photos_without_embedding,
+    search_photos_by_embedding,
 )
 from analyzer import AIAnalyzer
+
+
+# ==================== 缩略图异步加载 ====================
+
+class ThumbnailWorker(QThread):
+    """
+    缩略图生成工作线程
+    
+    在后台生成缩略图，避免UI卡顿
+    """
+    
+    # 信号：(文件路径, QPixmap缩略图)
+    thumbnail_ready = pyqtSignal(str, object)
+    # 信号：批量完成
+    batch_completed = pyqtSignal()
+    
+    def __init__(self, thumbnail_size: int = 150):
+        super().__init__()
+        self.thumbnail_size = thumbnail_size
+        self.pending_paths: List[str] = []
+        self.is_running = False
+        self.should_stop = False
+        self._lock = False  # 简单锁
+    
+    def add_paths(self, paths: List[str]):
+        """添加待处理的图片路径"""
+        # 去重添加
+        existing = set(self.pending_paths)
+        for p in paths:
+            if p not in existing:
+                self.pending_paths.append(p)
+    
+    def run(self):
+        """线程主执行函数"""
+        self.is_running = True
+        self.should_stop = False
+        
+        while not self.should_stop:
+            if not self.pending_paths:
+                # 没有待处理的，休眠一下
+                time.sleep(0.05)
+                continue
+            
+            # 取出一个路径
+            path = self.pending_paths.pop(0)
+            
+            try:
+                pixmap = self._create_thumbnail(path)
+                if pixmap:
+                    self.thumbnail_ready.emit(path, pixmap)
+            except Exception as e:
+                print(f"生成缩略图失败: {path}, 错误: {e}")
+            
+            # 如果队列空了，发送批量完成信号
+            if not self.pending_paths:
+                self.batch_completed.emit()
+        
+        self.is_running = False
+    
+    def _create_thumbnail(self, image_path: str) -> Optional[QPixmap]:
+        """创建缩略图"""
+        if not os.path.exists(image_path):
+            return None
+        
+        image = QImage(image_path)
+        if image.isNull():
+            return None
+        
+        from PyQt6.QtCore import Qt
+        thumbnail = image.scaled(
+            self.thumbnail_size, self.thumbnail_size,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.FastTransformation  # 使用快速变换提升性能
+        )
+        return QPixmap.fromImage(thumbnail)
+    
+    def stop(self):
+        """停止线程"""
+        self.should_stop = True
+        self.pending_paths.clear()
 
 
 class ScanWorker(QThread):
     """
     文件扫描工作线程
     
-    在阶段0中，这是一个占位类，用于验证多线程架构
-    实际的文件扫描功能将在阶段1中实现
-    阶段3中增加了AI分析功能
+    导入时自动进行场景分类（不做人脸检测），为照片打上基础标签
     """
     
     # 定义信号
@@ -37,15 +123,14 @@ class ScanWorker(QThread):
     scan_completed = pyqtSignal(int)  # total_files
     error_occurred = pyqtSignal(str)  # error_message
     
-    def __init__(self, root_path: str, supported_extensions: List[str] = None, model_profile: Optional[str] = None, analyze: bool = False):
+    def __init__(self, root_path: str, supported_extensions: List[str] = None, model_profile: Optional[str] = None):
         """
         初始化扫描工作线程
         
         Args:
             root_path: 要扫描的根目录路径
             supported_extensions: 支持的文件扩展名列表
-            model_profile: 模型档位
-            analyze: 是否在扫描时进行分析，False 仅导入照片，True 导入并分析
+            model_profile: 模型档位（用于场景分类）
         """
         super().__init__()
         
@@ -56,24 +141,41 @@ class ScanWorker(QThread):
         self.is_running = False
         self.should_stop = False
         self.model_profile = model_profile
-        self.analyze = analyze
 
-        # 仅在需要分析时初始化AI分析器
-        self.ai_analyzer = None
-        if self.analyze:
-            self.ai_analyzer = AIAnalyzer(model_profile=model_profile)
+        # 初始化场景分类器（轻量，仅用于分类）
+        self.scene_classifier = None
+        self._init_classifier()
         
         print(f"扫描工作线程初始化")
         print(f"根目录: {root_path}")
         print(f"支持格式: {self.supported_extensions}")
-        print(f"模式: {'导入+分析' if analyze else '仅导入'}")
-        if model_profile:
-            print(f"模型档位: {model_profile}")
+    
+    def _init_classifier(self):
+        """初始化场景分类器和 CLIP 编码器"""
+        # 初始化 CLIP 编码器 (用于语义 embedding)
+        try:
+            from models.clip_embedding import CLIPEmbeddingEncoder
+            self.clip_encoder = CLIPEmbeddingEncoder()
+            if self.clip_encoder.is_available():
+                print("✅ CLIP Embedding 编码器初始化成功")
+            else:
+                print("⚠️ CLIP Embedding 编码器不可用")
+                self.clip_encoder = None
+        except Exception as e:
+            print(f"⚠️ CLIP 编码器初始化失败: {e}")
+            self.clip_encoder = None
+        
+        # 初始化场景分类器 (可选，用于向后兼容)
+        try:
+            from models.mobilenetv2_classifier import MobileNetV2SceneClassifier
+            self.scene_classifier = MobileNetV2SceneClassifier()
+            print("✅ 场景分类器初始化成功")
+        except Exception as e:
+            print(f"⚠️ 场景分类器初始化失败: {e}")
+            self.scene_classifier = None
     
     def run(self):
-        """
-        线程主执行函数
-        """
+        """线程主执行函数"""
         self.is_running = True
         self.should_stop = False
         
@@ -84,25 +186,23 @@ class ScanWorker(QThread):
                 self.error_occurred.emit(f"目录不存在: {self.root_path}")
                 return
             
-            # 扫描并分析目录中的图片文件
-            self._scan_and_analyze_directory()
+            self._scan_and_classify_directory()
             
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             self.error_occurred.emit(f"扫描过程中发生错误: {str(e)}")
         finally:
             self.is_running = False
     
-    def _scan_and_analyze_directory(self):
-        """
-        扫描并分析目录中的图片文件
-        """
+    def _scan_and_classify_directory(self):
+        """扫描目录并对每张照片提取 CLIP embedding 和进行场景分类"""
         # 收集所有支持的图片文件
         image_files = []
         for root, dirs, files in os.walk(self.root_path):
             if self.should_stop:
                 break
             for file in files:
-                # 检查文件扩展名
                 if any(file.lower().endswith(ext) for ext in self.supported_extensions):
                     full_path = os.path.join(root, file)
                     image_files.append(full_path)
@@ -111,89 +211,186 @@ class ScanWorker(QThread):
             return
         
         total_files = len(image_files)
-        processed_files = 0
-        
         print(f"发现 {total_files} 个图片文件")
         
-        # 处理每个图片文件
-        for i, file_path in enumerate(image_files):
+        # 批量添加到数据库
+        new_files = [f for f in image_files if not is_photo_exist(f)]
+        if new_files:
+            add_photos_batch(new_files)
+            print(f"批量添加 {len(new_files)} 张新照片")
+        
+        # 逐个提取 CLIP embedding 和进行场景分类
+        processed_files = 0
+        for file_path in image_files:
             if self.should_stop:
                 break
-                
-            # 检查文件是否已在数据库中
-            if not is_photo_exist(file_path):
-                # 添加到数据库
-                photo_id = add_photo(file_path)
-                if photo_id is not None:
-                    self.file_found.emit(file_path)
-                    # 仅在 analyze=True 时进行分析
-                    if self.analyze and self.ai_analyzer:
-                        self._analyze_photo(photo_id, file_path)
-            else:
-                # 如果 analyze=True 且照片未完成或缺少分类，则重新分析
-                if self.analyze:
-                    status_row = get_photo_status(file_path)
-                    if status_row:
-                        photo_id, status, category = status_row
-                        if status != "done" or not category:
-                            print(f"重新分析未完成的照片: {file_path} (status={status}, category={category})")
-                            self._analyze_photo(photo_id, file_path)
-                    else:
-                        print(f"文件已存在数据库中: {file_path}")
-                else:
-                    print(f"文件已存在数据库中（仅导入模式，跳过分析）: {file_path}")
-                
-            processed_files += 1
             
-            # 发送进度更新信号
+            # 获取照片状态
+            status_row = get_photo_status(file_path)
+            if status_row:
+                photo_id, status, category = status_row
+                
+                # 提取 CLIP embedding (优先)
+                if self.clip_encoder:
+                    try:
+                        embedding = self.clip_encoder.encode_image(file_path)
+                        if embedding is not None:
+                            update_photo_embedding_by_path(file_path, embedding)
+                    except Exception as e:
+                        print(f"CLIP embedding 提取失败: {file_path}, 错误: {e}")
+                
+                # 如果没有分类，进行场景分类（向后兼容）
+                if not category and self.scene_classifier:
+                    try:
+                        classification = self.scene_classifier.classify(file_path)
+                        if classification:
+                            best_category = max(classification.items(), key=lambda x: x[1])[0]
+                            update_photo_status(photo_id, 'done', best_category)
+                    except Exception as e:
+                        print(f"分类失败: {file_path}, 错误: {e}")
+                
+                self.file_found.emit(file_path)
+            
+            processed_files += 1
             self.progress_updated.emit(processed_files, total_files)
         
-        # 发送完成信号
         if not self.should_stop:
             self.scan_completed.emit(processed_files)
     
-    def _analyze_photo(self, photo_id: int, file_path: str):
+    def stop_scan(self):
+        """停止扫描"""
+        print("请求停止扫描")
+        self.should_stop = True
+
+
+class FaceAnalysisWorker(QThread):
+    """
+    人脸分析工作线程
+    
+    专门用于人脸检测与识别，独立于照片导入流程
+    """
+    
+    # 定义信号
+    progress_updated = pyqtSignal(int, int)  # (current, total)
+    face_detected = pyqtSignal(str, int)  # (filepath, face_count)
+    analysis_completed = pyqtSignal(int, int)  # (total_photos, total_faces)
+    error_occurred = pyqtSignal(str)  # error_message
+    
+    def __init__(self, library_path: str = None, model_profile: Optional[str] = None):
         """
-        分析单张照片并存储结果
+        初始化人脸分析工作线程
         
         Args:
-            photo_id: 照片在数据库中的ID
-            file_path: 照片文件路径
+            library_path: 限制在某个目录下分析
+            model_profile: 模型档位
         """
-        if not self.ai_analyzer:
-            print(f"❌ 分析器未初始化，跳过分析: {file_path}")
-            return
-            
-        try:
-            print(f"开始分析照片: {file_path}")
-            
-            # 更新照片状态为处理中
-            update_photo_status(photo_id, 'processing')
-            
-            # 使用AI分析器分析照片
-            result = self.ai_analyzer.analyze_photo(file_path)
-            
-            if result is not None:
-                # 存储人脸数据
-                for face in result['faces']:
-                    bbox = face['bbox']
-                    embedding = face['embedding']
-                    confidence = face['confidence']
-                    add_face_data(photo_id, bbox, embedding, confidence)
-                
-                # 更新照片状态为完成，并设置分类
-                update_photo_status(photo_id, 'done', result['category'])
-                print(f"照片分析完成: {file_path}, 分类: {result['category']}")
-            else:
-                # 如果分析失败，更新状态为待处理
-                update_photo_status(photo_id, 'pending')
-                print(f"照片分析失败: {file_path}")
-                
-        except Exception as e:
-            # 如果分析过程中出现异常，更新状态为待处理
-            update_photo_status(photo_id, 'pending')
-            print(f"照片分析异常: {file_path}, 错误: {e}")
+        super().__init__()
+        
+        self.library_path = library_path
+        self.model_profile = model_profile
+        self.is_running = False
+        self.should_stop = False
+        
+        # 初始化AI分析器
+        self.ai_analyzer = AIAnalyzer(model_profile=model_profile)
+        
+        print(f"人脸分析工作线程初始化")
+        if library_path:
+            print(f"分析目录: {library_path}")
     
+    def run(self):
+        """线程主执行函数"""
+        self.is_running = True
+        self.should_stop = False
+        
+        try:
+            print("开始人脸分析...")
+            self._analyze_faces()
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self.error_occurred.emit(f"人脸分析错误: {str(e)}")
+        finally:
+            self.is_running = False
+    
+    def _analyze_faces(self):
+        """分析所有需要人脸检测的照片"""
+        # 获取需要人脸检测的照片（分类为人物相关但尚无人脸数据）
+        photos = get_photos_without_faces(self.library_path)
+        
+        if not photos:
+            print("没有需要人脸分析的照片")
+            self.analysis_completed.emit(0, 0)
+            return
+        
+        total_photos = len(photos)
+        total_faces = 0
+        processed = 0
+        
+        print(f"需要分析 {total_photos} 张照片")
+        
+        # 收集所有人脸数据用于批量插入
+        faces_batch = []
+        
+        for photo in photos:
+            if self.should_stop:
+                break
+            
+            photo_id = photo['id']
+            file_path = photo['filepath']
+            
+            try:
+                # 检测人脸
+                faces = self.ai_analyzer.detect_faces(file_path)
+                
+                if faces:
+                    # 为每个人脸提取特征
+                    for face in faces:
+                        embedding = self.ai_analyzer.get_face_embedding(
+                            file_path, 
+                            face['bbox'],
+                            face.get('landmarks')
+                        )
+                        if embedding is not None:
+                            faces_batch.append({
+                                'photo_id': photo_id,
+                                'bbox': face['bbox'],
+                                'embedding': embedding,
+                                'confidence': face.get('confidence', 0.0)
+                            })
+                            total_faces += 1
+                    
+                    self.face_detected.emit(file_path, len(faces))
+                    
+                    # 根据人脸数量更新分类
+                    if len(faces) == 1:
+                        update_photo_status(photo_id, 'done', '单人照')
+                    elif len(faces) > 1:
+                        update_photo_status(photo_id, 'done', '合照')
+                
+            except Exception as e:
+                print(f"人脸分析失败: {file_path}, 错误: {e}")
+            
+            processed += 1
+            self.progress_updated.emit(processed, total_photos)
+            
+            # 每50张批量插入一次
+            if len(faces_batch) >= 50:
+                add_faces_batch(faces_batch)
+                faces_batch.clear()
+        
+        # 插入剩余的人脸数据
+        if faces_batch:
+            add_faces_batch(faces_batch)
+        
+        if not self.should_stop:
+            self.analysis_completed.emit(processed, total_faces)
+            print(f"人脸分析完成: {processed} 张照片, {total_faces} 个人脸")
+    
+    def stop(self):
+        """停止分析"""
+        print("请求停止人脸分析")
+        self.should_stop = True
     def stop_scan(self):
         """
         停止扫描
@@ -375,6 +572,65 @@ class ClusteringWorker(QThread):
         """
         print("[占位] 请求停止聚类")
         self.should_stop = True
+
+
+# ==================== 语义搜索 ====================
+
+class SemanticSearchWorker(QThread):
+    """
+    语义搜索工作线程
+    
+    使用 CLIP 文本编码器将查询转换为向量，
+    然后与数据库中的图片向量计算相似度
+    """
+    
+    # 信号
+    search_completed = pyqtSignal(list)  # List of (photo_id, filepath, similarity)
+    error_occurred = pyqtSignal(str)
+    
+    def __init__(self, query: str, top_k: int = 50):
+        """
+        初始化语义搜索
+        
+        Args:
+            query: 搜索查询文本
+            top_k: 返回结果数量
+        """
+        super().__init__()
+        self.query = query
+        self.top_k = top_k
+        self.clip_encoder = None
+    
+    def run(self):
+        """执行语义搜索"""
+        try:
+            # 初始化 CLIP 编码器
+            from models.clip_embedding import CLIPEmbeddingEncoder
+            self.clip_encoder = CLIPEmbeddingEncoder()
+            
+            if not self.clip_encoder.is_available():
+                self.error_occurred.emit("CLIP 编码器不可用")
+                return
+            
+            # 编码查询文本
+            query_embedding = self.clip_encoder.encode_text(self.query)
+            if query_embedding is None:
+                self.error_occurred.emit("文本编码失败")
+                return
+            
+            # 搜索相似照片
+            results = search_photos_by_embedding(
+                query_embedding,
+                top_k=self.top_k,
+                threshold=0.1  # 最低相似度阈值
+            )
+            
+            self.search_completed.emit(results)
+            
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self.error_occurred.emit(f"搜索错误: {str(e)}")
 
 
 def main():
