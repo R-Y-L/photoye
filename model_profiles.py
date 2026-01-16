@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Dict
 
 MODEL_PROFILE_ENV_VAR = "PHOTOYE_MODEL_PROFILE"
-DEFAULT_MODEL_PROFILE = "balanced"
+DEFAULT_MODEL_PROFILE = "insightface"
 
 MODEL_PROFILES: Dict[str, Dict[str, str]] = {
     # Focus on responsiveness; pure OpenCV pipeline keeps dependencies light.

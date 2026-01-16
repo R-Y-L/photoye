@@ -28,6 +28,7 @@ from database import (
     get_unlabeled_faces,
     cleanup_on_exit,
     clear_temp_photos,
+    clear_all_ai_data,
     get_all_persons_with_sample_faces,
     get_person_with_faces,
     get_photos_by_person,
@@ -317,18 +318,31 @@ class PhotoyeMainWindow(QMainWindow):
         separator1.setStyleSheet("color: #ccc;")
         box.addWidget(separator1)
 
-        # ========== 第四部分：人脸分析（独立操作） ==========
-        box.addWidget(QLabel("🔍 人脸分析"))
+        # ========== 第四部分：AI 分析状态 (V2.2 自动化) ==========
+        box.addWidget(QLabel("🤖 AI 分析状态"))
         
-        face_analysis_btn = QPushButton("▶️ 运行人脸检测与识别")
-        face_analysis_btn.setStyleSheet("QPushButton { background-color: #4a90d9; color: white; padding: 8px; }")
-        face_analysis_btn.clicked.connect(self.run_face_analysis)
-        box.addWidget(face_analysis_btn)
+        # AI 分析说明
+        auto_info = QLabel("导入照片后自动进行:\n场景分类 → 人脸检测 → 人物聚类")
+        auto_info.setStyleSheet("color: #888; font-size: 10px; padding: 4px;")
+        auto_info.setWordWrap(True)
+        box.addWidget(auto_info)
         
-        # 人脸分析进度标签
-        self.face_analysis_label = QLabel("点击开始检测照片中的人脸")
+        # 人脸分析状态标签
+        self.face_analysis_label = QLabel("等待导入照片...")
         self.face_analysis_label.setStyleSheet("color: #666; font-size: 11px;")
         box.addWidget(self.face_analysis_label)
+        
+        # 聚类状态标签
+        self.cluster_label = QLabel("")
+        self.cluster_label.setStyleSheet("color: #666; font-size: 11px;")
+        box.addWidget(self.cluster_label)
+        
+        # 手动重新聚类按钮（可选操作）
+        recluster_btn = QPushButton("🔄 重新聚类")
+        recluster_btn.setToolTip("手动触发重新聚类（用于新增人脸后）")
+        recluster_btn.setStyleSheet("QPushButton { padding: 4px; font-size: 11px; }")
+        recluster_btn.clicked.connect(self.run_face_clustering)
+        box.addWidget(recluster_btn)
 
         # ========== 分隔线 ==========
         separator2 = QFrame()
@@ -1102,6 +1116,49 @@ class PhotoyeMainWindow(QMainWindow):
         self.face_analysis_label.setText("分析失败")
         self.status_bar.showMessage(f"人脸分析错误: {error_msg}", 5000)
 
+    def run_face_clustering(self):
+        """运行人脸聚类，将相似人脸分组"""
+        from worker import ClusteringWorker
+        
+        if hasattr(self, 'cluster_worker') and self.cluster_worker and self.cluster_worker.isRunning():
+            QMessageBox.information(self, "提示", "聚类正在进行中，请稍候...")
+            return
+        
+        self.cluster_label.setText("正在聚类...")
+        self.cluster_label.setStyleSheet("color: #4a90d9; font-size: 11px;")
+        
+        # 创建聚类工作线程
+        self.cluster_worker = ClusteringWorker(eps=0.7, min_samples=2)
+        self.cluster_worker.progress_updated.connect(self._on_clustering_progress)
+        self.cluster_worker.clustering_completed.connect(self._on_clustering_completed)
+        self.cluster_worker.error_occurred.connect(self._on_clustering_error)
+        self.cluster_worker.start()
+    
+    def _on_clustering_progress(self, current, total):
+        """聚类进度更新"""
+        self.cluster_label.setText(f"聚类中: {current}%")
+    
+    def _on_clustering_completed(self, result):
+        """聚类完成"""
+        n_clusters = result.get('n_clusters', 0)
+        n_noise = result.get('n_noise', 0)
+        n_faces = result.get('n_faces', 0)
+        
+        self.cluster_label.setText(f"完成: {n_clusters} 个人物, {n_noise} 个噪声")
+        self.cluster_label.setStyleSheet("color: #4a4; font-size: 11px;")
+        self.status_bar.showMessage(f"聚类完成: {n_faces} 个人脸分为 {n_clusters} 组，{n_noise} 个无法归类", 5000)
+        
+        # 刷新人物视图
+        self.refresh_person_filter_options()
+        if hasattr(self, 'people_view') and self.stacked_widget.currentWidget() == self.people_view:
+            self.load_people_view()
+    
+    def _on_clustering_error(self, error_msg):
+        """聚类错误"""
+        self.cluster_label.setText("聚类失败")
+        self.cluster_label.setStyleSheet("color: #d94a4a; font-size: 11px;")
+        self.status_bar.showMessage(f"聚类错误: {error_msg}", 5000)
+
     def ensure_faces_indexed(self):
         """在按人脸筛选时触发扫描，确保所有照片有人脸索引。"""
         if not self.current_library_path:
@@ -1212,14 +1269,8 @@ class PhotoyeMainWindow(QMainWindow):
             return
 
         photo_id = photo_data.get("id")
-        from database import get_raw_classification_for_photo
         
-        # 这是一个假设的函数，需要你在database.py中实现
-        # 它应该从一个新表或字段中获取存储的原始分类结果
-        # 这里我们暂时用一个模拟数据
-        # raw_scores = get_raw_classification_for_photo(photo_id) 
-        
-        # 暂时无法获取原始分类，先显示已知信息
+        # 显示已知信息
         category = photo_data.get('category', 'N/A')
         filepath = photo_data.get('filepath', 'N/A')
         
@@ -1312,28 +1363,37 @@ class PhotoyeMainWindow(QMainWindow):
             self.start_scan(directory)
     
     def start_scan(self, directory):
-        """开始扫描指定目录（导入并自动场景分类）"""
+        """开始扫描指定目录（V2.2 完整自动化流水线）"""
         # 更新当前库路径
         self.current_library_path = directory
         self.library_path_label.setText(directory)
 
-        # 创建并启动扫描工作线程（自动进行场景分类）
+        # 创建并启动扫描工作线程（自动化流水线）
         self.scan_worker = ScanWorker(directory, model_profile=self.selected_model_profile)
         
         # 连接信号
         self.scan_worker.progress_updated.connect(self.on_scan_progress)
+        self.scan_worker.stage_changed.connect(self.on_stage_changed)
         self.scan_worker.file_found.connect(self.on_file_found)
         self.scan_worker.scan_completed.connect(self.on_scan_completed)
+        self.scan_worker.pipeline_completed.connect(self.on_pipeline_completed)
         self.scan_worker.error_occurred.connect(self.on_scan_error)
         
         # 启动线程
         self.scan_worker.start()
         
-        self.status_bar.showMessage("正在扫描并分类照片...")
+        self.status_bar.showMessage("正在扫描并分析照片...")
+        self.face_analysis_label.setText("🔄 自动分析中...")
+        self.cluster_label.setText("等待人脸检测完成...")
+    
+    def on_stage_changed(self, stage_desc):
+        """处理阶段变化"""
+        self.face_analysis_label.setText(stage_desc)
+        self.status_bar.showMessage(stage_desc)
     
     def on_scan_progress(self, current, total):
         """处理扫描进度更新"""
-        self.status_bar.showMessage(f"已扫描 {current}/{total} 个文件")
+        self.status_bar.showMessage(f"已处理 {current}/{total} 个文件")
     
     def on_file_found(self, filepath):
         """处理发现新文件"""
@@ -1341,13 +1401,44 @@ class PhotoyeMainWindow(QMainWindow):
         print(f"发现新文件: {filename}")
     
     def on_scan_completed(self, total_files):
-        """处理扫描完成"""
-        self.status_bar.showMessage(f"扫描完成，共处理 {total_files} 个文件", 5000)
+        """处理文件扫描完成（流水线继续进行）"""
+        self.status_bar.showMessage(f"扫描完成: {total_files} 个文件，正在分析...", 3000)
+    
+    def on_pipeline_completed(self, stats):
+        """处理整个流水线完成"""
+        total = stats.get('total_files', 0)
+        faces = stats.get('faces_detected', 0)
+        clusters = stats.get('clusters_created', 0)
+        noise = stats.get('noise_faces', 0)
+        corrected = stats.get('categories_corrected', 0)
+        
+        # 更新UI标签
+        self.face_analysis_label.setText(f"✅ 检测到 {faces} 个人脸")
+        self.face_analysis_label.setStyleSheet("color: #4a4; font-size: 11px;")
+        
+        if clusters > 0:
+            self.cluster_label.setText(f"✅ {clusters} 个人物, {noise} 个噪声")
+            self.cluster_label.setStyleSheet("color: #4a4; font-size: 11px;")
+        else:
+            self.cluster_label.setText("无需聚类")
+            self.cluster_label.setStyleSheet("color: #666; font-size: 11px;")
+        
+        # 显示完成消息
+        msg = f"分析完成: {total} 张照片, {faces} 个人脸, {clusters} 个人物"
+        if corrected > 0:
+            msg += f", {corrected} 个分类修正"
+        self.status_bar.showMessage(msg, 8000)
+        
         self.scan_worker = None
-        # 重新加载照片
+        
+        # 重新加载照片和人物视图
         self.load_photos(self.current_filter)
-        # 更新统计信息
         self.update_stats()
+        self.refresh_person_filter_options()
+        
+        # 如果当前在人物视图，刷新它
+        if self.current_view_mode == "people":
+            self.load_people_view()
     
     def on_scan_error(self, error_msg):
         """处理扫描错误"""
@@ -1394,8 +1485,8 @@ class PhotoyeMainWindow(QMainWindow):
             """)
 
     def closeEvent(self, event):
-        """窗口关闭事件，清理临时数据。"""
-        cleanup_on_exit()
+        """窗口关闭事件，清空所有 AI 数据。"""
+        clear_all_ai_data()
         event.accept()
 
 

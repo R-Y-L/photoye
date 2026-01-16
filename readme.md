@@ -1,7 +1,7 @@
 # Photoye - 本地智能照片管理助手
 
-> **版本:** 2.1 (AI升级版)  
-> **更新日期:** 2026年01月07日
+> **版本:** 2.2 (自动化流水线)  
+> **更新日期:** 2026年01月16日
 
 ---
 
@@ -25,7 +25,7 @@
 - **本地优先 (Local-First):** 所有数据处理和存储均在用户本地设备完成
 - **隐私至上 (Privacy-First):** 用户的照片和分析出的元数据永远属于用户自己
 - **非破坏性操作 (Non-Destructive):** 绝不修改、移动或删除用户的原始文件
-- **用户友好 (User-Friendly):** 提供直观、流畅的操作界面
+- **智能自动化 (Smart Automation):** 用户只需选择文件夹，AI自动完成所有分析
 
 ---
 
@@ -89,6 +89,42 @@ Photoye/
 
 ## 3. 功能模块
 
+### 3.0 自动化 AI 流水线 (V2.2 核心特性)
+
+用户只需选择照片文件夹，后台自动完成所有AI分析：
+
+```
+用户选择文件夹
+       ↓
+┌─────────────────────────────────────────────────────────┐
+│              ScanWorker 自动化流水线                     │
+├─────────────────────────────────────────────────────────┤
+│                                                         │
+│  📂 Step 1: 扫描文件                                     │
+│  └── 遍历目录，收集图片，写入数据库                       │
+│                                                         │
+│  🏷️ Step 2: 场景分类 (OpenCLIP)                         │
+│  ├── 提取 512维 embedding（用于语义搜索）                 │
+│  └── 初步分类：风景/美食/建筑/动物/人物...               │
+│                                                         │
+│  👤 Step 3: 人脸检测 (InsightFace)                       │
+│  ├── 检测人脸 + 5点关键点                                │
+│  └── 提取 512维人脸 embedding                           │
+│                                                         │
+│  ⚡ Step 4: 交叉验证                                     │
+│  └── CLIP分类="风景" 但检测到人脸 → 自动修正为"合照"     │
+│                                                         │
+│  🔗 Step 5: 自动聚类 (DBSCAN)                            │
+│  ├── 将相似人脸分组为"人物"                              │
+│  └── 标记噪声点（路人、模糊脸）                          │
+│                                                         │
+└─────────────────────────────────────────────────────────┘
+       ↓
+UI 自动刷新，显示分类结果和人物分组
+       ↓
+用户为人物命名 → 高级筛选：按人物+场景组合查询
+```
+
 ### 3.1 AI模型清单
 
 项目集成的模型文件（位于 `models/models/` 目录）：
@@ -96,20 +132,17 @@ Photoye/
 **场景理解模型：**
 | 模型文件 | 用途 | 来源 | 状态 |
 |---------|------|------|------|
-| `mobileclip_s0.onnx` | MobileCLIP 视觉编码器 (512维) | Apple | 🔄 升级中 |
-| `mobileclip_text.onnx` | MobileCLIP 文本编码器 | Apple | 🔄 升级中 |
-| `openclip_vitb32_vision.onnx` | OpenCLIP ViT-B/32 视觉编码器 | OpenCLIP | ✅ 可用 |
-| `openclip_vitb32_text.onnx` | OpenCLIP ViT-B/32 文本编码器 | OpenCLIP | ✅ 可用 |
-| `image_classification_mobilenetv2_2022apr.onnx` | MobileNetV2 分类 (旧版) | OpenCV Zoo | ⚠️ 废弃 |
+| `openclip_vitb32_vision.onnx` | OpenCLIP ViT-B/32 视觉编码器 (512维) | OpenCLIP | ✅ **主力** |
+| `openclip_vitb32_text.onnx` | OpenCLIP ViT-B/32 文本编码器 | OpenCLIP | ✅ **主力** |
+| `image_classification_mobilenetv2_2022apr.onnx` | MobileNetV2 分类 | OpenCV Zoo | ⚠️ 向后兼容 |
 
-**人脸识别模型：**
+**人脸识别模型 (InsightFace buffalo_sc)：**
 | 模型文件 | 用途 | 来源 | 状态 |
 |---------|------|------|------|
-| `retinaface_mobile_0.25.onnx` | RetinaFace 人脸检测 | InsightFace | 🔄 升级中 |
-| `arcface_w600k_r50.onnx` | ArcFace 人脸识别 (512维) | InsightFace | 🔄 升级中 |
-| `face_detection_yunet_2023mar.onnx` | YuNet 人脸检测 (旧版) | OpenCV Zoo | ⚠️ 废弃 |
-| `face_recognition_sface_2021dec.onnx` | SFace 人脸识别 (旧版) | OpenCV Zoo | ⚠️ 废弃 |
-| `dlib_face_recognition_resnet_model_v1.dat` | Dlib 人脸识别 (旧版) | Dlib | ⚠️ 废弃 |
+| `det_500m.onnx` | RetinaFace 人脸检测 (2.5MB) | InsightFace | ✅ **主力** |
+| `w600k_mbf.onnx` | ArcFace 人脸识别 (512维, 13.6MB) | InsightFace | ✅ **主力** |
+| `face_detection_yunet_2023mar.onnx` | YuNet 人脸检测 | OpenCV Zoo | ⚠️ 向后兼容 |
+| `face_recognition_sface_2021dec.onnx` | SFace 人脸识别 | OpenCV Zoo | ⚠️ 向后兼容 |
 
 ### 3.2 模型配置档 (Profiles)
 
@@ -118,16 +151,16 @@ Photoye/
 | 配置名 | 人脸检测 | 人脸识别 | 场景理解 | 特点 |
 |--------|---------|---------|---------|------|
 | `legacy` | YuNet | SFace | MobileNetV2 | 旧版兼容 |
-| `balanced` | RetinaFace | ArcFace | MobileCLIP | **默认**，平衡速度与精度 |
-| `accuracy` | RetinaFace | ArcFace | OpenCLIP | 最高精度 |
+| `insightface` | InsightFace | InsightFace | OpenCLIP | **默认**，推荐使用 |
+| `best` | InsightFace | InsightFace | OpenCLIP | 最高精度 |
 
 **切换方式：**
 ```bash
 # 方式1: 环境变量
-set PHOTOYE_MODEL_PROFILE=accuracy
+set PHOTOYE_MODEL_PROFILE=insightface
 
 # 方式2: 代码中指定
-analyzer = AIAnalyzer(model_profile="balanced")
+analyzer = AIAnalyzer(model_profile="insightface")
 ```
 
 ### 3.3 后台工作线程
@@ -135,10 +168,10 @@ analyzer = AIAnalyzer(model_profile="balanced")
 | Worker 类 | 功能 | 状态 |
 |-----------|------|------|
 | `ThumbnailWorker` | 异步生成缩略图，避免UI卡顿 | ✅ 已实现 |
-| `ScanWorker` | 扫描目录 + 自动场景分类 | ✅ 已实现 |
-| `FaceAnalysisWorker` | 人脸检测与特征提取（独立于导入） | ✅ 已实现 |
-| `AnalysisWorker` | 批量照片分析 | ⚠️ 占位 |
-| `ClusteringWorker` | 人脸聚类 | ⚠️ 占位 |
+| `ScanWorker` | **自动化流水线**: 扫描→分类→人脸检测→聚类 | ✅ **V2.2 升级** |
+| `ClusteringWorker` | DBSCAN 人脸聚类 (eps=0.7, min_samples=2) | ✅ 已实现 |
+| `SemanticSearchWorker` | CLIP 语义搜索 | ✅ 已实现 |
+| `FaceAnalysisWorker` | 独立人脸分析（保留用于手动触发） | ✅ 已实现 |
 
 ### 3.4 数据库结构
 

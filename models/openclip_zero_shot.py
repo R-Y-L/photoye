@@ -25,14 +25,18 @@ except Exception:  # noqa: BLE001
     ort = None  # type: ignore
 
 MODEL_DIR = Path(__file__).resolve().parent / "models"
+
+# 优化后的分类提示词，使用更具体、更有区分度的描述
+# 每个类别使用多个描述，用逗号分隔，提高匹配准确度
 DEFAULT_LABELS = {
-    "风景": "a wide landscape photograph, nature scenery",
-    "建筑": "a photo of impressive architecture or buildings",
-    "人物自拍": "a selfie portrait of a single person",
-    "人物合照": "a group photo of multiple friends smiling",
-    "室内": "a cozy indoor scene",
-    "文档": "a scanned document or sheet of paper",
-    "美食": "a delicious food photograph with close up dish",
+    "单人照": "a close-up portrait photo of one person, single face selfie, headshot of a man or woman",
+    "合照": "a group photo with two or more people together, family photo, friends gathering, team photo with multiple faces",
+    "风景": "scenic landscape photo, natural scenery, mountains, beach, sunset, outdoor nature view with no people",
+    "建筑": "architectural photography, building exterior, urban cityscape, street view, modern architecture",
+    "室内": "indoor room photo, living room, bedroom, office interior, restaurant inside, home decoration",
+    "动物": "animal photography, cute pet photo, dog, cat, wildlife, bird, zoo animals",
+    "美食": "food photography, delicious meal, gourmet dish, restaurant food, cooking, cuisine close-up",
+    "文档": "document scan, paper with text, screenshot, receipt, form, written page",
 }
 
 

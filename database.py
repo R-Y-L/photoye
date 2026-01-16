@@ -133,7 +133,6 @@ def init_db() -> None:
 def clear_temp_photos() -> None:
     """
     清空临时照片表（photos 及其关联的临时数据）
-    保留 persons, faces, tags 等持久数据供下次使用
     """
     conn = get_connection()
     try:
@@ -149,15 +148,35 @@ def clear_temp_photos() -> None:
         conn.close()
 
 
+def clear_all_ai_data() -> None:
+    """
+    清空所有 AI 分析数据（人脸、人物、照片）
+    在重新扫描文件夹时调用，确保从头开始分析
+    """
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        # 按依赖顺序删除: faces 依赖 persons, photo_tags 依赖 photos
+        cursor.execute("DELETE FROM faces")
+        cursor.execute("DELETE FROM persons")
+        cursor.execute("DELETE FROM photo_tags")
+        cursor.execute("DELETE FROM photos")
+        conn.commit()
+        print("已清空所有 AI 分析数据（人脸、人物、照片）")
+    except sqlite3.Error as e:
+        print(f"清空 AI 数据失败: {e}")
+        conn.rollback()
+    finally:
+        conn.close()
+
+
 def cleanup_on_exit() -> None:
     """
-    程序退出时的清理操作：
-    1. 清空临时照片表
-    2. 保留人脸embedding和人物身份信息供下次使用
+    程序退出时的清理操作：清空所有临时数据
     """
     print("正在清理临时数据...")
     clear_temp_photos()
-    print("临时数据已清理，人脸和人物信息已保留")
+    print("临时数据已清理")
 
 
 def add_photo(filepath: str, filesize: int = None, created_at: str = None) -> Optional[int]:
@@ -289,13 +308,12 @@ def get_photos_without_faces(library_path: str = None) -> List[Dict]:
     try:
         cursor = conn.cursor()
         
-        # 查找没有人脸记录且分类为人物相关的照片
+        # 查找没有人脸记录的所有照片（不限制分类）
         sql = """
             SELECT p.id, p.filepath, p.category
             FROM photos p
             LEFT JOIN faces f ON p.id = f.photo_id
             WHERE f.id IS NULL
-            AND p.category IN ('单人照', '合照', '人物')
         """
         params = []
         
@@ -397,24 +415,25 @@ def get_all_photos(
         query = "SELECT DISTINCT p.* FROM photos p"
         joins = []
         conditions = []
-        params: list = []
+        join_params: list = []  # JOIN 子句的参数
+        where_params: list = []  # WHERE 子句的参数
 
         if status:
             conditions.append("p.status = ?")
-            params.append(status)
+            where_params.append(status)
 
         if categories:
             placeholders = ",".join(["?"] * len(categories))
             conditions.append(f"p.category IN ({placeholders})")
-            params.extend(categories)
+            where_params.extend(categories)
 
         if library_path:
             conditions.append("p.filepath LIKE ?")
-            params.append(library_path.replace('\\', '/') + '%')
+            where_params.append(library_path.replace('\\', '/') + '%')
 
         if person_id is not None:
             joins.append("JOIN faces f ON f.photo_id = p.id AND f.person_id = ?")
-            params.append(person_id)
+            join_params.append(person_id)
         elif unlabeled_faces:
             joins.append("JOIN faces f ON f.photo_id = p.id AND f.person_id IS NULL")
         elif has_faces is True:
@@ -430,6 +449,8 @@ def get_all_photos(
 
         query += " ORDER BY p.added_at DESC"
 
+        # 合并参数：JOIN 参数在前，WHERE 参数在后
+        params = join_params + where_params
         cursor.execute(query, params)
 
         rows = cursor.fetchall()
@@ -935,7 +956,7 @@ def add_faces_batch(faces_data: List[Dict], batch_size: int = 50) -> int:
     批量添加人脸数据到数据库
     
     Args:
-        faces_data: 人脸数据列表，每个元素包含 {photo_id, bbox, embedding, confidence}
+        faces_data: 人脸数据列表，每个元素包含 {photo_id, bbox, embedding, confidence, landmarks}
         batch_size: 每批次处理的数量
     
     Returns:
@@ -956,11 +977,13 @@ def add_faces_batch(faces_data: List[Dict], batch_size: int = 50) -> int:
         for face in faces_data:
             bbox_json = json.dumps(face['bbox'])
             embedding_blob = face['embedding'].tobytes()
+            landmarks_json = face.get('landmarks')  # 已经是 JSON 字符串或 None
             batch_data.append((
                 face['photo_id'],
                 bbox_json,
                 embedding_blob,
-                face.get('confidence', 0.0)
+                face.get('confidence', 0.0),
+                landmarks_json
             ))
         
         # 分批插入
@@ -968,8 +991,8 @@ def add_faces_batch(faces_data: List[Dict], batch_size: int = 50) -> int:
             batch = batch_data[i:i + batch_size]
             try:
                 cursor.executemany("""
-                    INSERT INTO faces (photo_id, bbox, embedding, confidence)
-                    VALUES (?, ?, ?, ?)
+                    INSERT INTO faces (photo_id, bbox, embedding, confidence, landmarks)
+                    VALUES (?, ?, ?, ?, ?)
                 """, batch)
                 conn.commit()
                 inserted_count += len(batch)
@@ -1292,6 +1315,236 @@ def search_photos_by_embedding(
     results.sort(key=lambda x: x[2], reverse=True)
     
     return results[:top_k]
+
+
+# ==================== DBSCAN 聚类相关 ====================
+
+def get_all_face_embeddings_for_clustering() -> List[Tuple[int, np.ndarray]]:
+    """
+    获取所有未分配人物的人脸 embedding，用于聚类
+    
+    Returns:
+        List of (face_id, embedding) tuples
+    """
+    conn = get_connection()
+    
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, embedding 
+            FROM faces 
+            WHERE person_id IS NULL AND is_noise = 0
+            ORDER BY id
+        """)
+        rows = cursor.fetchall()
+        
+        result = []
+        for row in rows:
+            face_id = row['id']
+            emb_blob = row['embedding']
+            if emb_blob:
+                # 根据长度判断维度 (512维 float32 = 2048字节, 128维 = 512字节)
+                if len(emb_blob) == 2048:
+                    embedding = np.frombuffer(emb_blob, dtype=np.float32)
+                elif len(emb_blob) == 512:
+                    embedding = np.frombuffer(emb_blob, dtype=np.float32)
+                else:
+                    # 尝试作为 float32
+                    embedding = np.frombuffer(emb_blob, dtype=np.float32)
+                result.append((face_id, embedding))
+        
+        return result
+        
+    except sqlite3.Error as e:
+        print(f"获取人脸 embedding 失败: {e}")
+        return []
+    finally:
+        conn.close()
+
+
+def update_face_cluster_assignments(assignments: Dict[int, Optional[int]], noise_ids: List[int]) -> int:
+    """
+    更新人脸的聚类分配结果
+    
+    Args:
+        assignments: {face_id: person_id} 映射，person_id 可以是新创建的或现有的
+        noise_ids: 被标记为噪声的 face_id 列表
+    
+    Returns:
+        更新的记录数
+    """
+    conn = get_connection()
+    updated = 0
+    
+    try:
+        cursor = conn.cursor()
+        
+        # 更新正常聚类的人脸
+        for face_id, person_id in assignments.items():
+            cursor.execute("""
+                UPDATE faces 
+                SET person_id = ?, is_noise = 0 
+                WHERE id = ?
+            """, (person_id, face_id))
+            updated += cursor.rowcount
+        
+        # 标记噪声人脸
+        for face_id in noise_ids:
+            cursor.execute("""
+                UPDATE faces 
+                SET is_noise = 1, person_id = NULL 
+                WHERE id = ?
+            """, (face_id,))
+            updated += cursor.rowcount
+        
+        conn.commit()
+        print(f"聚类分配更新: {len(assignments)} 个正常, {len(noise_ids)} 个噪声")
+        return updated
+        
+    except sqlite3.Error as e:
+        print(f"更新聚类分配失败: {e}")
+        conn.rollback()
+        return 0
+    finally:
+        conn.close()
+
+
+def create_person_for_cluster(cluster_id: int) -> int:
+    """
+    为一个聚类创建新的人物记录
+    
+    Args:
+        cluster_id: 聚类ID（用于生成默认名称）
+    
+    Returns:
+        新创建的 person_id
+    """
+    conn = get_connection()
+    
+    try:
+        cursor = conn.cursor()
+        default_name = f"未命名人物 #{cluster_id + 1}"
+        
+        cursor.execute("""
+            INSERT INTO persons (name) VALUES (?)
+        """, (default_name,))
+        conn.commit()
+        
+        return cursor.lastrowid
+        
+    except sqlite3.Error as e:
+        print(f"创建人物失败: {e}")
+        conn.rollback()
+        return -1
+    finally:
+        conn.close()
+
+
+def create_person_for_single_face(face_id: int) -> int:
+    """
+    为单个人脸（噪声点）创建独立的人物记录
+    
+    Args:
+        face_id: 人脸ID
+    
+    Returns:
+        新创建的 person_id
+    """
+    conn = get_connection()
+    
+    try:
+        cursor = conn.cursor()
+        # 使用 "路人" 前缀区分于聚类产生的人物
+        default_name = f"路人 #{face_id}"
+        
+        cursor.execute("""
+            INSERT INTO persons (name) VALUES (?)
+        """, (default_name,))
+        conn.commit()
+        
+        return cursor.lastrowid
+        
+    except sqlite3.Error as e:
+        print(f"为单个人脸创建人物失败: {e}")
+        conn.rollback()
+        return -1
+    finally:
+        conn.close()
+
+
+def get_noise_faces(limit: int = 50) -> List[Dict]:
+    """
+    获取被标记为噪声的人脸列表
+    
+    Args:
+        limit: 最大返回数量
+    
+    Returns:
+        噪声人脸列表
+    """
+    conn = get_connection()
+    
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT f.id, f.photo_id, f.bbox, f.confidence, p.filepath
+            FROM faces f
+            JOIN photos p ON p.id = f.photo_id
+            WHERE f.is_noise = 1
+            ORDER BY f.id DESC
+            LIMIT ?
+        """, (limit,))
+        rows = cursor.fetchall()
+        
+        import json
+        faces = []
+        for row in rows:
+            face = dict(row)
+            face["bbox"] = json.loads(face["bbox"])
+            faces.append(face)
+        return faces
+        
+    except sqlite3.Error as e:
+        print(f"获取噪声人脸失败: {e}")
+        return []
+    finally:
+        conn.close()
+
+
+def mark_face_as_noise(face_id: int) -> bool:
+    """将某个人脸标记为噪声"""
+    conn = get_connection()
+    
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE faces SET is_noise = 1, person_id = NULL WHERE id = ?
+        """, (face_id,))
+        conn.commit()
+        return cursor.rowcount > 0
+    except sqlite3.Error as e:
+        print(f"标记噪声失败: {e}")
+        return False
+    finally:
+        conn.close()
+
+
+def unmark_face_as_noise(face_id: int) -> bool:
+    """取消某个人脸的噪声标记"""
+    conn = get_connection()
+    
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE faces SET is_noise = 0 WHERE id = ?
+        """, (face_id,))
+        conn.commit()
+        return cursor.rowcount > 0
+    except sqlite3.Error as e:
+        print(f"取消噪声标记失败: {e}")
+        return False
+    finally:
+        conn.close()
 
 
 def main():

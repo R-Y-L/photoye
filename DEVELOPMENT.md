@@ -1,14 +1,14 @@
 # Photoye 开发规划文档
 
-> **当前版本:** 2.0 → 2.1 升级中  
-> **最后更新:** 2026年01月07日
+> **当前版本:** 2.1 → 2.2 升级中  
+> **最后更新:** 2026年01月16日
 
 ---
 
 ## 📋 目录
 
 1. [版本历史](#版本历史)
-2. [V2.1 升级计划 - AI引擎重构](#v21-升级计划---ai引擎重构)
+2. [V2.2 升级计划 - 自动化流水线](#v22-升级计划---自动化流水线)
 3. [技术方案详解](#技术方案详解)
 4. [开发任务清单](#开发任务清单)
 5. [已完成阶段回顾](#已完成阶段回顾)
@@ -22,11 +22,96 @@
 |------|------|---------|
 | V1.0 | 2025-08 | 基础功能：扫描、分类、缩略图 |
 | V2.0 | 2026-01-06 | 重构：异步缩略图、即时筛选、批量DB操作 |
-| V2.1 | 2026-01-07 | **当前** - AI升级：CLIP Embedding + InsightFace |
+| V2.1 | 2026-01-07 | AI升级：CLIP Embedding + InsightFace + DBSCAN |
+| V2.2 | 2026-01-16 | **当前** - 自动化流水线 + 人物命名 |
 
 ---
 
-## V2.1 升级计划 - AI引擎重构
+## V2.2 升级计划 - 自动化流水线
+
+### 🎯 升级目标
+
+1. **全自动 AI 处理：** 用户只需选择文件夹，后台自动完成扫描→分类→人脸检测→聚类
+2. **交叉验证分类：** CLIP 分类与人脸检测结果互相验证，提高准确度
+3. **人物命名功能：** 聚类完成后，用户可以为人物分组命名
+4. **高级复合筛选：** 支持按人物+场景的组合条件筛选照片
+
+### 📊 核心流程图
+
+```
+用户选择文件夹
+       ↓
+┌─────────────────────────────────────────────────────────┐
+│                   ScanWorker (后台自动)                  │
+├─────────────────────────────────────────────────────────┤
+│  Step 1: 扫描文件                                        │
+│  ├── 遍历目录收集图片文件                                │
+│  └── 批量写入 photos 表 (status='pending')              │
+│                                                         │
+│  Step 2: 场景分类 (OpenCLIP)                            │
+│  ├── 提取 512维 embedding → photos.embedding            │
+│  └── 初步分类 → photos.category                         │
+│                                                         │
+│  Step 3: 人脸检测 (InsightFace)                         │
+│  ├── 检测人脸 + 5点 landmarks                           │
+│  └── 提取人脸 embedding → faces 表                      │
+│                                                         │
+│  Step 4: 交叉验证 ⚡                                     │
+│  └── CLIP分类="风景" 但检测到人脸 → 修正为"合照"        │
+│                                                         │
+│  Step 5: 自动聚类 (DBSCAN)                              │
+│  ├── 对所有未归属人脸聚类                                │
+│  ├── 创建 persons 记录                                   │
+│  └── 更新 faces.person_id                               │
+└─────────────────────────────────────────────────────────┘
+       ↓
+UI 自动刷新，显示分类结果和人物分组
+       ↓
+用户为人物命名 (双击编辑)
+       ↓
+高级筛选：按人物+场景组合查询
+```
+
+### 📋 任务清单
+
+#### Sprint 5: 自动化流水线
+
+| ID | 任务 | 状态 |
+|----|------|------|
+| S5-1 | 重构 ScanWorker：整合扫描+分类+人脸检测 | ✅ 完成 |
+| S5-2 | 实现交叉验证：CLIP分类与人脸检测互相校正 | ✅ 完成 |
+| S5-3 | 自动触发聚类：人脸分析完成后自动运行 | ✅ 完成 |
+| S5-4 | 简化 UI：移除手动人脸分析/聚类按钮 | ✅ 完成 |
+| S5-5 | 强化状态反馈：实时显示后台任务进度 | ✅ 完成 |
+| S5-6 | 升级分类器：MobileNetV2 → OpenCLIP 零样本 | ✅ 完成 |
+
+**分类准确率提升 (2026-01-16):**
+| 图片 | MobileNetV2 | OpenCLIP 零样本 |
+|------|-------------|-----------------|
+| food.jpg | ~0.25 | **0.996** (美食) |
+| group_photo.jpg | ~0.23 | **0.968** (合照) |
+| single_face.jpg | ~0.25 | **0.803** (单人照) |
+
+#### Sprint 6: 人物管理
+
+| ID | 任务 | 状态 |
+|----|------|------|
+| S6-1 | 人物命名：双击编辑人物名称 | ⏳ 待开始 |
+| S6-2 | 数据库：添加 update_person_name() 函数 | ⏳ 待开始 |
+| S6-3 | 自动刷新：命名后刷新筛选下拉列表 | ⏳ 待开始 |
+| S6-4 | 人物合并/拆分功能 | ⏳ 未来 |
+
+#### Sprint 7: 高级筛选
+
+| ID | 任务 | 状态 |
+|----|------|------|
+| S7-1 | 复合筛选 UI：多条件组合面板 | ⏳ 未来 |
+| S7-2 | 数据库：支持 AND/OR 组合查询 | ⏳ 未来 |
+| S7-3 | 保存筛选条件为智能相册 | ⏳ 未来 |
+
+---
+
+## V2.1 已完成 - AI引擎重构
 
 ### 🎯 升级目标
 
@@ -215,34 +300,34 @@ def cluster_faces_dbscan(embeddings, eps=0.5, min_samples=3):
 
 ### 🟡 Sprint 2: 人脸识别升级 (InsightFace)
 
-- [ ] S2-1: 下载 RetinaFace ONNX 模型
-- [ ] S2-2: 下载 ArcFace ONNX 模型
-- [ ] S2-3: 创建 `models/retinaface_detector.py`
-- [ ] S2-4: 创建 `models/arcface_recognizer.py`
-- [ ] S2-5: 实现人脸对齐 `align_face()` 函数
-- [ ] S2-6: 数据库迁移: `faces` 表添加 `landmarks`, `is_noise` 字段
-- [ ] S2-7: 修改 `FaceAnalysisWorker`: 使用新模型
-- [ ] S2-8: 更新 `model_profiles.py` 配置
-- [ ] S2-9: 单元测试: InsightFace 管线
+- [x] S2-1: 下载 RetinaFace ONNX 模型 *(buffalo_sc: det_500m.onnx)*
+- [x] S2-2: 下载 ArcFace ONNX 模型 *(w600k_mbf.onnx, 512维)*
+- [x] S2-3: 创建 `models/insightface_detector.py`
+- [x] S2-4: 创建 `models/insightface_recognizer.py`
+- [x] S2-5: 实现人脸对齐 `align_face()` 函数 *(5点landmarks → 112x112)*
+- [x] S2-6: 数据库迁移: `faces` 表添加 `landmarks`, `is_noise` 字段
+- [x] S2-7: 修改 `FaceAnalysisWorker`: 使用新模型、保存landmarks
+- [x] S2-8: 更新 `model_profiles.py`: 添加 `insightface` 和 `best` 配置
+- [x] S2-9: 单元测试: InsightFace 管线 *(11/11 passed)*
 
 ---
 
 ### 🟢 Sprint 3: 聚类算法升级 (DBSCAN)
 
-- [ ] S3-1: 添加 `scikit-learn` 依赖
-- [ ] S3-2: 实现 `cluster_faces_dbscan()` 函数
-- [ ] S3-3: 修改 `ClusteringWorker`: 使用 DBSCAN
-- [ ] S3-4: UI: 噪声人脸标记与手动归类
-- [ ] S3-5: 单元测试: DBSCAN 聚类
+- [x] S3-1: 添加 `scikit-learn` 依赖 *(已安装)*
+- [x] S3-2: 实现 `cluster_faces_dbscan()` 函数 *(clustering.py)*
+- [x] S3-3: 修改 `ClusteringWorker`: 使用 DBSCAN
+- [x] S3-4: 数据库: 噪声人脸标记 `is_noise` 及相关函数
+- [x] S3-5: 单元测试: DBSCAN 聚类 *(9/9 passed)*
 
 ---
 
 ### 🔵 Sprint 4: 集成与优化
 
-- [ ] S4-1: 数据迁移脚本: 旧版 → V2.1
-- [ ] S4-2: 性能测试: 2500张照片基准
-- [ ] S4-3: 引入 FAISS 向量索引 (可选)
-- [ ] S4-4: 端到端测试
+- [x] S4-1: 数据迁移脚本: `migrate_to_v21()` 函数
+- [x] S4-2: 端到端测试: `tests/test_e2e.py`
+- [ ] S4-3: 引入 FAISS 向量索引 *(可选，大规模库时启用)*
+- [ ] S4-4: 性能测试: 2500张照片基准
 
 ---
 
@@ -259,27 +344,26 @@ def cluster_faces_dbscan(embeddings, eps=0.5, min_samples=3):
 - [x] 缩略图视图
 - [x] 基础筛选功能
 
-### ✅ V2.0 阶段 (2026-01-06)
+### ✅ V2.1 阶段 (2026-01-07 ~ 2026-01-16)
 
-- [x] ThumbnailWorker 异步缩略图
-- [x] 批量数据库操作 (add_photos_batch, add_faces_batch)
-- [x] ScanWorker 重构 (自动分类)
-- [x] 即时筛选 (移除"应用筛选"按钮)
-- [x] FaceAnalysisWorker 独立人脸分析
-- [x] SFace 对齐修复 (alignCrop)
-- [x] Union-Find 聚类算法
+**Sprint 1-3: AI引擎升级**
+- [x] CLIP Embedding: OpenCLIP ViT-B/32 语义搜索
+- [x] InsightFace: buffalo_sc (det_500m + w600k_mbf)
+- [x] DBSCAN 聚类: eps=0.7, min_samples=2
+- [x] 数据库迁移: photos.embedding, faces.landmarks, faces.is_noise
+- [x] 单元测试: 11/11 InsightFace, 9/9 DBSCAN
 
 ---
 
 ## 未来路线图
 
-| 版本 | 目标 | 主要功能 |
-|------|------|---------|
-| V2.1 | AI升级 | CLIP Embedding + InsightFace + DBSCAN |
-| V2.2 | 人物管理 | 人脸命名UI、合并/拆分人物 |
-| V2.3 | 高级搜索 | 自然语言搜索、组合条件 |
-| V3.0 | 多媒体 | 视频关键帧提取与分析 |
-| V3.1 | 地理信息 | GPS坐标解析、地图展示 |
+| 版本 | 目标 | 主要功能 | 状态 |
+|------|------|---------|------|
+| V2.1 | AI升级 | CLIP Embedding + InsightFace + DBSCAN | ✅ 完成 |
+| V2.2 | 自动化 | 全自动流水线 + 交叉验证 + 人物命名 | 🔄 进行中 |
+| V2.3 | 高级搜索 | 自然语言搜索、复合条件筛选 | ⏳ 计划中 |
+| V3.0 | 多媒体 | 视频关键帧提取与分析 | 💡 构想 |
+| V3.1 | 地理信息 | GPS坐标解析、地图展示 | 💡 构想 |
 
 ---
 

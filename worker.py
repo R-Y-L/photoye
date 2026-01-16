@@ -4,7 +4,7 @@
 Photoye - 后台任务管理模块
 负责处理所有耗时操作，避免UI线程阻塞
 
-版本: 2.1 (CLIP Embedding 支持)
+版本: 2.2 (自动化流水线)
 """
 
 import os
@@ -26,6 +26,10 @@ from database import (
     batch_update_photo_embeddings,
     get_photos_without_embedding,
     search_photos_by_embedding,
+    get_all_face_embeddings_for_clustering,
+    update_face_cluster_assignments,
+    create_person_for_cluster,
+    clear_all_ai_data,
 )
 from analyzer import AIAnalyzer
 
@@ -112,15 +116,18 @@ class ThumbnailWorker(QThread):
 
 class ScanWorker(QThread):
     """
-    文件扫描工作线程
+    智能扫描工作线程 (V2.2 自动化流水线)
     
-    导入时自动进行场景分类（不做人脸检测），为照片打上基础标签
+    完整流程: 扫描 → CLIP分类 → 人脸检测 → 交叉验证 → 自动聚类
+    用户只需选择文件夹，后台自动完成所有AI处理
     """
     
     # 定义信号
     progress_updated = pyqtSignal(int, int)  # (current, total)
+    stage_changed = pyqtSignal(str)  # 当前阶段描述
     file_found = pyqtSignal(str)  # filepath
     scan_completed = pyqtSignal(int)  # total_files
+    pipeline_completed = pyqtSignal(dict)  # 完整流水线结果
     error_occurred = pyqtSignal(str)  # error_message
     
     def __init__(self, root_path: str, supported_extensions: List[str] = None, model_profile: Optional[str] = None):
@@ -130,7 +137,7 @@ class ScanWorker(QThread):
         Args:
             root_path: 要扫描的根目录路径
             supported_extensions: 支持的文件扩展名列表
-            model_profile: 模型档位（用于场景分类）
+            model_profile: 模型档位（用于AI分析）
         """
         super().__init__()
         
@@ -141,17 +148,29 @@ class ScanWorker(QThread):
         self.is_running = False
         self.should_stop = False
         self.model_profile = model_profile
-
-        # 初始化场景分类器（轻量，仅用于分类）
-        self.scene_classifier = None
-        self._init_classifier()
         
-        print(f"扫描工作线程初始化")
+        # 统计数据
+        self.stats = {
+            'total_files': 0,
+            'new_files': 0,
+            'faces_detected': 0,
+            'categories_corrected': 0,
+            'clusters_created': 0,
+            'noise_faces': 0
+        }
+
+        # 初始化AI组件
+        self.clip_encoder = None
+        self.scene_classifier = None
+        self.ai_analyzer = None
+        self._init_ai_components()
+        
+        print(f"扫描工作线程初始化 (V2.2 自动化流水线)")
         print(f"根目录: {root_path}")
         print(f"支持格式: {self.supported_extensions}")
     
-    def _init_classifier(self):
-        """初始化场景分类器和 CLIP 编码器"""
+    def _init_ai_components(self):
+        """初始化所有AI组件"""
         # 初始化 CLIP 编码器 (用于语义 embedding)
         try:
             from models.clip_embedding import CLIPEmbeddingEncoder
@@ -165,39 +184,84 @@ class ScanWorker(QThread):
             print(f"⚠️ CLIP 编码器初始化失败: {e}")
             self.clip_encoder = None
         
-        # 初始化场景分类器 (可选，用于向后兼容)
+        # 初始化 OpenCLIP 零样本分类器 (替代 MobileNetV2，更准确)
         try:
-            from models.mobilenetv2_classifier import MobileNetV2SceneClassifier
-            self.scene_classifier = MobileNetV2SceneClassifier()
-            print("✅ 场景分类器初始化成功")
+            from models.openclip_zero_shot import OpenCLIPZeroShotClassifier
+            self.scene_classifier = OpenCLIPZeroShotClassifier()
+            print("✅ OpenCLIP 零样本分类器初始化成功")
         except Exception as e:
-            print(f"⚠️ 场景分类器初始化失败: {e}")
-            self.scene_classifier = None
+            print(f"⚠️ OpenCLIP 零样本分类器初始化失败: {e}")
+            # 回退到 MobileNetV2
+            try:
+                from models.mobilenetv2_classifier import MobileNetV2SceneClassifier
+                self.scene_classifier = MobileNetV2SceneClassifier()
+                print("⚠️ 回退到 MobileNetV2 分类器")
+            except Exception as e2:
+                print(f"⚠️ 场景分类器初始化失败: {e2}")
+                self.scene_classifier = None
+        
+        # 初始化AI分析器 (用于人脸检测和识别)
+        try:
+            self.ai_analyzer = AIAnalyzer(model_profile=self.model_profile)
+            print("✅ AI分析器初始化成功 (人脸检测+识别)")
+        except Exception as e:
+            print(f"⚠️ AI分析器初始化失败: {e}")
+            self.ai_analyzer = None
     
     def run(self):
-        """线程主执行函数"""
+        """线程主执行函数 - 完整的自动化流水线"""
         self.is_running = True
         self.should_stop = False
+        self.stats = {k: 0 for k in self.stats}
         
         try:
-            print(f"开始扫描目录: {self.root_path}")
+            print(f"开始自动化流水线: {self.root_path}")
             
             if not os.path.exists(self.root_path):
                 self.error_occurred.emit(f"目录不存在: {self.root_path}")
                 return
             
-            self._scan_and_classify_directory()
+            # Stage 0: 清空旧的 AI 分析数据
+            self.stage_changed.emit("🗑️ 清空旧数据...")
+            clear_all_ai_data()
+            
+            # Stage 1: 扫描文件
+            self.stage_changed.emit("📂 扫描文件...")
+            image_files = self._scan_files()
+            if self.should_stop:
+                return
+            
+            # Stage 2: CLIP 分类与 Embedding
+            self.stage_changed.emit("🏷️ 场景分类中...")
+            self._classify_and_embed(image_files)
+            if self.should_stop:
+                return
+            
+            # Stage 3: 人脸检测与特征提取
+            self.stage_changed.emit("👤 检测人脸...")
+            self._detect_faces(image_files)
+            if self.should_stop:
+                return
+            
+            # Stage 4: 自动聚类
+            self.stage_changed.emit("🔗 人脸聚类...")
+            self._auto_clustering()
+            if self.should_stop:
+                return
+            
+            # 完成
+            self.stage_changed.emit("✅ 处理完成")
+            self.pipeline_completed.emit(self.stats)
             
         except Exception as e:
             import traceback
             traceback.print_exc()
-            self.error_occurred.emit(f"扫描过程中发生错误: {str(e)}")
+            self.error_occurred.emit(f"流水线错误: {str(e)}")
         finally:
             self.is_running = False
     
-    def _scan_and_classify_directory(self):
-        """扫描目录并对每张照片提取 CLIP embedding 和进行场景分类"""
-        # 收集所有支持的图片文件
+    def _scan_files(self) -> List[str]:
+        """Stage 1: 扫描目录收集图片文件"""
         image_files = []
         for root, dirs, files in os.walk(self.root_path):
             if self.should_stop:
@@ -207,55 +271,180 @@ class ScanWorker(QThread):
                     full_path = os.path.join(root, file)
                     image_files.append(full_path)
         
-        if self.should_stop:
-            return
+        self.stats['total_files'] = len(image_files)
+        print(f"发现 {len(image_files)} 个图片文件")
         
-        total_files = len(image_files)
-        print(f"发现 {total_files} 个图片文件")
-        
-        # 批量添加到数据库
+        # 批量添加新文件到数据库
         new_files = [f for f in image_files if not is_photo_exist(f)]
         if new_files:
             add_photos_batch(new_files)
+            self.stats['new_files'] = len(new_files)
             print(f"批量添加 {len(new_files)} 张新照片")
         
-        # 逐个提取 CLIP embedding 和进行场景分类
-        processed_files = 0
-        for file_path in image_files:
+        self.scan_completed.emit(len(image_files))
+        return image_files
+    
+    def _classify_and_embed(self, image_files: List[str]):
+        """Stage 2: CLIP 分类与 Embedding 提取"""
+        total = len(image_files)
+        
+        for i, file_path in enumerate(image_files):
             if self.should_stop:
                 break
             
-            # 获取照片状态
             status_row = get_photo_status(file_path)
-            if status_row:
-                photo_id, status, category = status_row
+            if not status_row:
+                continue
                 
-                # 提取 CLIP embedding (优先)
-                if self.clip_encoder:
-                    try:
-                        embedding = self.clip_encoder.encode_image(file_path)
-                        if embedding is not None:
-                            update_photo_embedding_by_path(file_path, embedding)
-                    except Exception as e:
-                        print(f"CLIP embedding 提取失败: {file_path}, 错误: {e}")
-                
-                # 如果没有分类，进行场景分类（向后兼容）
-                if not category and self.scene_classifier:
-                    try:
-                        classification = self.scene_classifier.classify(file_path)
-                        if classification:
-                            best_category = max(classification.items(), key=lambda x: x[1])[0]
-                            update_photo_status(photo_id, 'done', best_category)
-                    except Exception as e:
-                        print(f"分类失败: {file_path}, 错误: {e}")
-                
-                self.file_found.emit(file_path)
+            photo_id, status, category = status_row
             
-            processed_files += 1
-            self.progress_updated.emit(processed_files, total_files)
+            # 提取 CLIP embedding
+            if self.clip_encoder:
+                try:
+                    embedding = self.clip_encoder.encode_image(file_path)
+                    if embedding is not None:
+                        update_photo_embedding_by_path(file_path, embedding)
+                except Exception as e:
+                    print(f"CLIP embedding 提取失败: {file_path}, 错误: {e}")
+            
+            # 场景分类（如果尚未分类）
+            if not category and self.scene_classifier:
+                try:
+                    classification = self.scene_classifier.classify(file_path)
+                    if classification:
+                        best_category = max(classification.items(), key=lambda x: x[1])[0]
+                        update_photo_status(photo_id, 'done', best_category)
+                except Exception as e:
+                    print(f"分类失败: {file_path}, 错误: {e}")
+            
+            self.file_found.emit(file_path)
+            self.progress_updated.emit(i + 1, total)
+    
+    def _detect_faces(self, image_files: List[str]):
+        """Stage 3: 人脸检测与特征提取 + 交叉验证"""
+        if not self.ai_analyzer:
+            print("⚠️ AI分析器不可用，跳过人脸检测")
+            return
         
-        if not self.should_stop:
-            self.scan_completed.emit(processed_files)
+        import json
+        
+        # 获取所有照片进行人脸检测（不再限制分类）
+        total = len(image_files)
+        faces_batch = []
+        
+        for i, file_path in enumerate(image_files):
+            if self.should_stop:
+                break
+            
+            status_row = get_photo_status(file_path)
+            if not status_row:
+                continue
+                
+            photo_id, status, category = status_row
+            
+            try:
+                # 检测人脸
+                faces = self.ai_analyzer.detect_faces(file_path)
+                
+                if faces:
+                    # 交叉验证：如果检测到人脸，但分类不是人物相关，则修正分类
+                    non_person_categories = ['风景', '建筑', '美食', '动物', '文档', '室内']
+                    if category in non_person_categories:
+                        # 修正分类
+                        new_category = '合照' if len(faces) > 1 else '单人照'
+                        update_photo_status(photo_id, 'done', new_category)
+                        self.stats['categories_corrected'] += 1
+                        print(f"📝 交叉验证修正: {os.path.basename(file_path)} [{category}] → [{new_category}]")
+                    
+                    # 为每个人脸提取特征
+                    for face in faces:
+                        embedding = self.ai_analyzer.get_face_embedding(
+                            file_path, 
+                            face['bbox'],
+                            face.get('landmarks')
+                        )
+                        if embedding is not None:
+                            landmarks_json = None
+                            if face.get('landmarks'):
+                                landmarks_json = json.dumps(face['landmarks'])
+                            
+                            faces_batch.append({
+                                'photo_id': photo_id,
+                                'bbox': face['bbox'],
+                                'embedding': embedding,
+                                'confidence': face.get('confidence', 0.0),
+                                'landmarks': landmarks_json
+                            })
+                            self.stats['faces_detected'] += 1
+                    
+                    # 更新分类（如果尚未分类）
+                    if not category:
+                        new_cat = '单人照' if len(faces) == 1 else '合照'
+                        update_photo_status(photo_id, 'done', new_cat)
+                
+            except Exception as e:
+                print(f"人脸检测失败: {file_path}, 错误: {e}")
+            
+            self.progress_updated.emit(i + 1, total)
+            
+            # 每50张批量插入一次
+            if len(faces_batch) >= 50:
+                add_faces_batch(faces_batch)
+                faces_batch.clear()
+        
+        # 插入剩余的人脸数据
+        if faces_batch:
+            add_faces_batch(faces_batch)
+        
+        print(f"人脸检测完成: {self.stats['faces_detected']} 个人脸, {self.stats['categories_corrected']} 个分类修正")
+    
+    def _auto_clustering(self):
+        """Stage 4: 自动聚类"""
+        from clustering import cluster_faces_dbscan
+        from database import create_person_for_single_face
+        
+        # 获取所有未分配的人脸 embedding
+        face_embeddings = get_all_face_embeddings_for_clustering()
+        
+        if not face_embeddings:
+            print("没有需要聚类的人脸")
+            return
+        
+        print(f"开始聚类 {len(face_embeddings)} 个人脸...")
+        
+        # 执行 DBSCAN 聚类 (min_samples=2: 至少2张才能形成簇)
+        result = cluster_faces_dbscan(
+            face_embeddings,
+            eps=0.6,  # 调整：更严格的阈值，避免把不同人聚在一起
+            min_samples=2
+        )
+        
+        # 为每个聚类创建人物并分配人脸
+        assignments = {}  # face_id -> person_id
+        
+        for cluster_id, face_ids in result['clusters'].items():
+            person_id = create_person_for_cluster(cluster_id)
+            if person_id > 0:
+                for face_id in face_ids:
+                    assignments[face_id] = person_id
+        
+        # 为噪声点（只出现一次的人脸）创建独立人物
+        # 这样确保每个检测到的人脸都有对应的人物记录
+        noise_persons_created = 0
+        for face_id in result['noise_ids']:
+            person_id = create_person_for_single_face(face_id)
+            if person_id > 0:
+                assignments[face_id] = person_id
+                noise_persons_created += 1
+        
+        # 更新数据库
+        update_face_cluster_assignments(assignments, [])  # 不再有真正的噪声
+        
+        total_persons = result['n_clusters'] + noise_persons_created
+        self.stats['clusters_created'] = total_persons
+        self.stats['noise_faces'] = 0  # 噪声已转为独立人物
+        
+        print(f"聚类完成: {result['n_clusters']} 个人物, {result['n_noise']} 个噪声")
     
     def stop_scan(self):
         """停止扫描"""
@@ -352,11 +541,18 @@ class FaceAnalysisWorker(QThread):
                             face.get('landmarks')
                         )
                         if embedding is not None:
+                            # 序列化 landmarks 为 JSON 字符串
+                            import json
+                            landmarks_json = None
+                            if face.get('landmarks'):
+                                landmarks_json = json.dumps(face['landmarks'])
+                            
                             faces_batch.append({
                                 'photo_id': photo_id,
                                 'bbox': face['bbox'],
                                 'embedding': embedding,
-                                'confidence': face.get('confidence', 0.0)
+                                'confidence': face.get('confidence', 0.0),
+                                'landmarks': landmarks_json
                             })
                             total_faces += 1
                     
@@ -497,80 +693,121 @@ class ClusteringWorker(QThread):
     """
     人脸聚类工作线程
     
-    在阶段0中，这是一个占位类
-    实际的聚类功能将在阶段5中实现
+    使用 DBSCAN 算法对人脸特征进行聚类，
+    能更好地处理噪声点（离群人脸）
     """
     
     # 定义信号
     progress_updated = pyqtSignal(int, int)  # (current, total)
-    clustering_completed = pyqtSignal(list)  # clusters_result
+    clustering_completed = pyqtSignal(dict)  # clustering result
     error_occurred = pyqtSignal(str)  # error_message
     
-    def __init__(self, similarity_threshold: float = 0.6):
+    def __init__(self, eps: float = 0.7, min_samples: int = 2):
         """
         初始化聚类工作线程
         
         Args:
-            similarity_threshold: 相似度阈值
+            eps: DBSCAN 邻域半径（余弦距离），推荐 0.5-0.8
+            min_samples: 形成簇的最小样本数
         """
         super().__init__()
         
-        self.similarity_threshold = similarity_threshold
+        self.eps = eps
+        self.min_samples = min_samples
         self.is_running = False
         self.should_stop = False
         
-        print(f"[占位] 聚类工作线程初始化，相似度阈值: {similarity_threshold}")
+        print(f"聚类工作线程初始化: eps={eps}, min_samples={min_samples}")
     
     def run(self):
-        """
-        线程主执行函数
-        """
+        """线程主执行函数"""
         self.is_running = True
         self.should_stop = False
         
         try:
-            print(f"[占位] 开始人脸聚类")
-            
-            # 在实际实现中，这里会:
-            # 1. 从数据库读取所有未命名的人脸特征向量
-            # 2. 使用聚类算法进行分组
-            # 3. 发送进度更新信号
-            # 4. 返回聚类结果
-            
-            # 占位实现 - 模拟聚类过程
-            self._simulate_clustering()
-            
+            print("开始 DBSCAN 人脸聚类...")
+            self._perform_clustering()
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             self.error_occurred.emit(f"聚类过程中发生错误: {str(e)}")
         finally:
             self.is_running = False
     
-    def _simulate_clustering(self):
-        """
-        模拟聚类过程 (占位函数)
-        """
-        # 模拟聚类进度
-        for i in range(10):
-            if self.should_stop:
-                break
-            
-            time.sleep(0.1)
-            self.progress_updated.emit(i + 1, 10)
+    def _perform_clustering(self):
+        """执行 DBSCAN 聚类"""
+        from database import (
+            get_all_face_embeddings_for_clustering,
+            update_face_cluster_assignments,
+            create_person_for_cluster
+        )
+        from clustering import cluster_faces_dbscan
         
-        # 模拟聚类结果
-        if not self.should_stop:
-            mock_clusters = [
-                {'cluster_id': 0, 'face_ids': [1, 5, 12, 18], 'representative_face_id': 1},
-                {'cluster_id': 1, 'face_ids': [3, 8, 15], 'representative_face_id': 3},
-                {'cluster_id': 2, 'face_ids': [7, 11, 20, 25, 30], 'representative_face_id': 7},
-            ]
-            self.clustering_completed.emit(mock_clusters)
+        # 获取所有未分配的人脸 embedding
+        self.progress_updated.emit(0, 100)
+        face_embeddings = get_all_face_embeddings_for_clustering()
+        
+        if not face_embeddings:
+            print("没有需要聚类的人脸")
+            self.clustering_completed.emit({
+                'n_clusters': 0,
+                'n_noise': 0,
+                'n_faces': 0
+            })
+            return
+        
+        print(f"获取到 {len(face_embeddings)} 个待聚类人脸")
+        self.progress_updated.emit(20, 100)
+        
+        if self.should_stop:
+            return
+        
+        # 执行 DBSCAN 聚类
+        result = cluster_faces_dbscan(
+            face_embeddings,
+            eps=self.eps,
+            min_samples=self.min_samples
+        )
+        
+        self.progress_updated.emit(60, 100)
+        
+        if self.should_stop:
+            return
+        
+        # 为每个聚类创建人物并分配人脸
+        assignments = {}  # face_id -> person_id
+        
+        for cluster_id, face_ids in result['clusters'].items():
+            # 创建新人物
+            person_id = create_person_for_cluster(cluster_id)
+            if person_id > 0:
+                for face_id in face_ids:
+                    assignments[face_id] = person_id
+        
+        self.progress_updated.emit(80, 100)
+        
+        if self.should_stop:
+            return
+        
+        # 更新数据库
+        update_face_cluster_assignments(assignments, result['noise_ids'])
+        
+        self.progress_updated.emit(100, 100)
+        
+        # 发送完成信号
+        final_result = {
+            'n_clusters': result['n_clusters'],
+            'n_noise': result['n_noise'],
+            'n_faces': len(face_embeddings),
+            'clusters': result['clusters']
+        }
+        
+        print(f"聚类完成: {result['n_clusters']} 个人物, {result['n_noise']} 个噪声")
+        self.clustering_completed.emit(final_result)
     
     def stop_clustering(self):
-        """
-        停止聚类
-        """
-        print("[占位] 请求停止聚类")
+        """停止聚类"""
+        print("请求停止聚类")
         self.should_stop = True
 
 
@@ -588,17 +825,19 @@ class SemanticSearchWorker(QThread):
     search_completed = pyqtSignal(list)  # List of (photo_id, filepath, similarity)
     error_occurred = pyqtSignal(str)
     
-    def __init__(self, query: str, top_k: int = 50):
+    def __init__(self, query: str, top_k: int = 20, threshold: float = 0.22):
         """
         初始化语义搜索
         
         Args:
             query: 搜索查询文本
             top_k: 返回结果数量
+            threshold: 最低相似度阈值（低于此值不返回）
         """
         super().__init__()
         self.query = query
         self.top_k = top_k
+        self.threshold = threshold
         self.clip_encoder = None
     
     def run(self):
@@ -622,10 +861,15 @@ class SemanticSearchWorker(QThread):
             results = search_photos_by_embedding(
                 query_embedding,
                 top_k=self.top_k,
-                threshold=0.1  # 最低相似度阈值
+                threshold=self.threshold
             )
             
-            self.search_completed.emit(results)
+            # 过滤低相似度结果
+            filtered_results = [
+                r for r in results if r[2] >= self.threshold
+            ]
+            
+            self.search_completed.emit(filtered_results)
             
         except Exception as e:
             import traceback
