@@ -1,18 +1,86 @@
 # Photoye 开发规划文档
 
-> **当前版本:** 2.1 → 2.2 升级中  
+> **当前版本:** 2.3 (Open-Vocabulary)  
 > **最后更新:** 2026年01月16日
 
 ---
 
 ## 📋 目录
 
-1. [版本历史](#版本历史)
+1. [V2.3 升级计划 - Open-Vocabulary 语义检索](#v23-升级计划---open-vocabulary-语义检索)
 2. [V2.2 升级计划 - 自动化流水线](#v22-升级计划---自动化流水线)
-3. [技术方案详解](#技术方案详解)
-4. [开发任务清单](#开发任务清单)
+3. [版本历史](#版本历史)
+4. [技术方案详解](#技术方案详解)
 5. [已完成阶段回顾](#已完成阶段回顾)
-6. [未来路线图](#未来路线图)
+
+---
+
+## V2.3 升级计划 - Open-Vocabulary 语义检索 ✅ 已完成
+
+### 🎯 升级目标
+
+放弃固定类别分类，走开放词汇语义检索：
+
+1. **Prompt Ensemble (文本端):** 多模板平均，提升文本 embedding 质量
+2. **Multi-Crop (图像端):** 多裁剪融合，捕获更完整的图像信息
+3. **Open-Vocabulary 搜索:** 用户输入任意自然语言查询
+
+### 📊 升级对比
+
+| 方向 | V2.2 (之前) | V2.3 (当前) |
+|------|-------------|---------------|
+| 文本 Embedding | 单一提示 | **Prompt Ensemble** (7 模板平均) ✅ |
+| 图像 Embedding | 单一 center crop | **Multi-crop** (5 裁剪融合) ✅ |
+| 检索方式 | 固定 8 类别分类 | **Open-vocabulary** 语义搜索 ✅ |
+
+### 📋 任务清单
+
+#### Phase 1: 核心算法 (clip_embedding.py) ✅
+
+| ID | 任务 | 状态 |
+|----|------|------|
+| P1-1 | 实现 PROMPT_TEMPLATES 和 encode_text_ensemble() | ✅ 完成 |
+| P1-2 | 实现 _generate_crops() 和 encode_image_multicrop() | ✅ 完成 |
+| P1-3 | 添加 embedding_version 参数支持回退 | ✅ 完成 |
+
+#### Phase 2: 工作流整合 (worker.py) ✅
+
+| ID | 任务 | 状态 |
+|----|------|------|
+| P2-1 | ScanWorker 使用 multi-crop embedding | ✅ 完成 |
+| P2-2 | SemanticSearchWorker 使用 Prompt Ensemble | ✅ 完成 |
+| P2-3 | 保留交叉验证 (检测到人脸 → 标记含人物) | ✅ 保留 |
+
+#### Phase 3: UI (main.py) ✅
+
+| ID | 任务 | 状态 |
+|----|------|------|
+| P3-1 | 语义搜索输入框 | ✅ 已有 |
+| P3-2 | 搜索结果显示相似度 | ✅ 已有 |
+| P3-3 | 分类筛选作为辅助 | ✅ 保留 |
+
+### 🔧 技术方案
+
+**Prompt Ensemble 模板:**
+```python
+PROMPT_TEMPLATES = [
+    "a photo of {}",
+    "a photograph of {}",
+    "an image of {}",
+    "{} in a photo",
+    "a picture of {}",
+    "a good photo of {}",
+    "a photo showing {}",
+]
+```
+
+**Multi-Crop 策略:**
+```python
+# 5-crop: 中心 + 4角
+CROPS = ["center", "top_left", "top_right", "bottom_left", "bottom_right"]
+# 中心权重更高
+WEIGHTS = [2.0, 1.0, 1.0, 1.0, 1.0]
+```
 
 ---
 
@@ -23,11 +91,12 @@
 | V1.0 | 2025-08 | 基础功能：扫描、分类、缩略图 |
 | V2.0 | 2026-01-06 | 重构：异步缩略图、即时筛选、批量DB操作 |
 | V2.1 | 2026-01-07 | AI升级：CLIP Embedding + InsightFace + DBSCAN |
-| V2.2 | 2026-01-16 | **当前** - 自动化流水线 + 人物命名 |
+| V2.2 | 2026-01-16 | 自动化流水线 + OpenCLIP 零样本分类 |
+| V2.3 | 2026-01-16 | **Open-Vocabulary** 语义检索 (Prompt Ensemble + Multi-Crop) |
 
 ---
 
-## V2.2 升级计划 - 自动化流水线
+## V2.2 升级计划 - 自动化流水线 ✅ 已完成
 
 ### 🎯 升级目标
 

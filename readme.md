@@ -1,6 +1,6 @@
 # Photoye - 本地智能照片管理助手
 
-> **版本:** 2.2 (自动化流水线)  
+> **版本:** 2.3 (Open-Vocabulary 语义检索)  
 > **更新日期:** 2026年01月16日
 
 ---
@@ -62,34 +62,33 @@ Photoye/
 ├── main.py                 # 应用主入口和UI (PyQt6)
 ├── database.py             # 数据库交互模块 (SQLite3)
 ├── analyzer.py             # AI分析模块 (统一调度)
-├── worker.py               # 后台工作线程模块
+├── worker.py               # 后台工作线程模块 (V2.3 Open-Vocabulary)
+├── clustering.py           # DBSCAN 人脸聚类模块
 ├── model_profiles.py       # 模型配置档定义
 ├── run.py                  # 快速启动脚本
 ├── start_photoye.bat       # Windows批处理启动
 ├── requirements.txt        # Python依赖
 ├── models/                 # 模型适配器代码
-│   ├── opencv_yunet_detector.py    # YuNet人脸检测
-│   ├── opencv_sface_recognizer.py  # SFace人脸识别
-│   ├── dlib_detector.py            # Dlib检测与识别
-│   ├── mobilenetv2_classifier.py   # MobileNetV2场景分类
-│   ├── openclip_zero_shot.py       # OpenCLIP零样本分类
+│   ├── insightface_detector.py     # InsightFace人脸检测 
+│   ├── insightface_recognizer.py   # InsightFace人脸识别 
+│   ├── openclip_zero_shot.py       # OpenCLIP零样本分类 
+│   ├── clip_embedding.py           # CLIP语义编码器 (V2.3 Multi-Crop + Ensemble)
+│   ├── opencv_yunet_detector.py    # YuNet人脸检测 (兼容)
+│   ├── opencv_sface_recognizer.py  # SFace人脸识别 (兼容)
+│   ├── mobilenetv2_classifier.py   # MobileNetV2场景分类 (兼容)
 │   ├── model_interfaces.py         # 模型接口定义
 │   ├── download_models.py          # 模型下载脚本
 │   └── models/                     # ONNX模型文件目录
 └── tests/                  # 单元测试
-    ├── test_analyzer.py
-    ├── test_models.py
-    ├── test_stage1.py
-    ├── test_stage3.py
-    ├── test_stage4.py
-    └── test_images/        # 测试图片
+    ├── test_*.py           # 各模块测试文件
+    └── test_images/        # 测试图片 (不纳入git)
 ```
 
 ---
 
 ## 3. 功能模块
 
-### 3.0 自动化 AI 流水线 (V2.2 核心特性)
+### 3.0 自动化 AI 流水线 (V2.3 Open-Vocabulary)
 
 用户只需选择照片文件夹，后台自动完成所有AI分析：
 
@@ -100,32 +99,48 @@ Photoye/
 │              ScanWorker 自动化流水线                     │
 ├─────────────────────────────────────────────────────────┤
 │                                                         │
+│  🗑️ Step 0: 清空旧数据                                   │
+│  └── 清空 faces, persons, photos 表，确保全新分析        │
+│                                                         │
 │  📂 Step 1: 扫描文件                                     │
 │  └── 遍历目录，收集图片，写入数据库                       │
 │                                                         │
-│  🏷️ Step 2: 场景分类 (OpenCLIP)                         │
-│  ├── 提取 512维 embedding（用于语义搜索）                 │
-│  └── 初步分类：风景/美食/建筑/动物/人物...               │
+│  🏷️ Step 2: Embedding 提取 (V2.3 Multi-Crop)            │
+│  ├── 5-crop 融合: 中心 + 4角 (加权平均)                  │
+│  └── 提取 512维 embedding 用于语义搜索                  │
 │                                                         │
-│  👤 Step 3: 人脸检测 (InsightFace)                       │
-│  ├── 检测人脸 + 5点关键点                                │
-│  └── 提取 512维人脸 embedding                           │
+│  👤 Step 3: 人脸检测 (InsightFace buffalo_sc)            │
+│  ├── RetinaFace 检测人脸 + 5点关键点                     │
+│  └── ArcFace 提取 512维人脸 embedding                   │
 │                                                         │
 │  ⚡ Step 4: 交叉验证                                     │
-│  └── CLIP分类="风景" 但检测到人脸 → 自动修正为"合照"     │
+│  └── 检测到人脸 → 自动标记为含人物照片                  │
 │                                                         │
 │  🔗 Step 5: 自动聚类 (DBSCAN)                            │
-│  ├── 将相似人脸分组为"人物"                              │
-│  └── 标记噪声点（路人、模糊脸）                          │
+│  ├── 将相似人脸分组为"人物" (eps=0.6, cosine距离)        │
+│  └── 噪声点自动创建为"路人 #X"                           │
 │                                                         │
 └─────────────────────────────────────────────────────────┘
        ↓
 UI 自动刷新，显示分类结果和人物分组
        ↓
-用户为人物命名 → 高级筛选：按人物+场景组合查询
+用户为人物命名 → **Open-Vocabulary 语义搜索**
 ```
 
-### 3.1 AI模型清单
+### 3.1 V2.3 核心特性: Open-Vocabulary 语义检索
+
+| 特性 | 说明 |
+|------|------|
+| **Prompt Ensemble** | 7 个模板平均，提升文本 embedding 质量 |
+| **Multi-Crop** | 5 个裁剪融合 (中心+4角)，捕获更完整图像信息 |
+| **Open-Vocabulary** | 用户输入任意自然语言查询，不受固定类别限制 |
+
+**搜索示例:**
+- "一个人在海边" → 返回海边单人照
+- "美食摆盘" → 返回精致摆盘的食物照片
+- "古建筑" → 返回古典建筑照片
+
+### 3.2 AI模型清单
 
 项目集成的模型文件（位于 `models/models/` 目录）：
 
@@ -144,7 +159,7 @@ UI 自动刷新，显示分类结果和人物分组
 | `face_detection_yunet_2023mar.onnx` | YuNet 人脸检测 | OpenCV Zoo | ⚠️ 向后兼容 |
 | `face_recognition_sface_2021dec.onnx` | SFace 人脸识别 | OpenCV Zoo | ⚠️ 向后兼容 |
 
-### 3.2 模型配置档 (Profiles)
+### 3.3 模型配置档 (Profiles)
 
 在 `model_profiles.py` 中定义预设组合：
 
@@ -163,22 +178,24 @@ set PHOTOYE_MODEL_PROFILE=insightface
 analyzer = AIAnalyzer(model_profile="insightface")
 ```
 
-### 3.3 后台工作线程
+### 3.4 后台工作线程
 
 | Worker 类 | 功能 | 状态 |
 |-----------|------|------|
 | `ThumbnailWorker` | 异步生成缩略图，避免UI卡顿 | ✅ 已实现 |
-| `ScanWorker` | **自动化流水线**: 扫描→分类→人脸检测→聚类 | ✅ **V2.2 升级** |
-| `ClusteringWorker` | DBSCAN 人脸聚类 (eps=0.7, min_samples=2) | ✅ 已实现 |
-| `SemanticSearchWorker` | CLIP 语义搜索 | ✅ 已实现 |
+| `ScanWorker` | **自动化流水线**: 清空→扫描→Multi-Crop→人脸→聚类 | ✅ **V2.3 核心** |
+| `ClusteringWorker` | DBSCAN 人脸聚类 (eps=0.6, min_samples=2, cosine) | ✅ 已实现 |
+| `SemanticSearchWorker` | CLIP 语义搜索 (Prompt Ensemble) | ✅ **V2.3 核心** |
 | `FaceAnalysisWorker` | 独立人脸分析（保留用于手动触发） | ✅ 已实现 |
 
-### 3.4 数据库结构
+### 3.5 数据库结构
 
 使用 SQLite3，数据库文件：`photoye_library.db`
 
+**注意**: 每次扫描新文件夹时会清空旧数据，程序退出时也会清空，确保每次都是全新分析。
+
 ```sql
--- 照片表 (V2.1 升级版)
+-- 照片表
 CREATE TABLE photos (
     id INTEGER PRIMARY KEY,
     filepath TEXT NOT NULL UNIQUE,
@@ -225,16 +242,14 @@ CREATE TABLE vector_index_meta (
 
 | 类别 | 技术/库 | 版本要求 |
 |------|---------|---------|
-| 编程语言 | Python | 3.10+ |
+| 编程语言 | Python | 3.9+ |
 | GUI框架 | PyQt6 | ≥6.4.0 |
 | AI推理 | ONNX Runtime | ≥1.15.0 |
 | 图像处理 | OpenCV-Contrib | ≥4.7.0 |
-| 人脸识别 | Dlib | ≥19.24.2 |
 | 科学计算 | NumPy | ≥1.21.0 |
 | 图像读取 | Pillow | ≥9.0.0 |
 | 分词器 | tokenizers | ≥0.13.0 |
 | 数据库 | SQLite3 | Python内置 |
-| 向量搜索 | FAISS | ≥1.7.0 (可选) |
 | 聚类 | scikit-learn | ≥1.0.0 |
 
 ---
@@ -273,7 +288,17 @@ start_photoye.bat
 
 ---
 
-## 6. 测试
+## 6. 使用流程
+
+1. **启动应用** → 点击"选择文件夹"
+2. **等待自动分析** → 观察左侧"🤖 AI 分析状态"面板
+3. **浏览分类结果** → 使用分类筛选器（风景/美食/合照等）
+4. **管理人物** → 切换到"按人物"筛选，为人物命名
+5. **语义搜索** → 在搜索框输入自然语言描述
+
+---
+
+## 7. 测试
 
 ```bash
 # 运行所有测试
@@ -286,7 +311,7 @@ python tests/test_analyzer.py
 
 ---
 
-## 7. 开发文档
+## 8. 开发文档
 
 详细的开发规划、任务进度和技术方案请参阅：**[DEVELOPMENT.md](DEVELOPMENT.md)**
 

@@ -285,7 +285,7 @@ class ScanWorker(QThread):
         return image_files
     
     def _classify_and_embed(self, image_files: List[str]):
-        """Stage 2: CLIP 分类与 Embedding 提取"""
+        """Stage 2: CLIP 分类与 Embedding 提取 (V2.3: Multi-Crop)"""
         total = len(image_files)
         
         for i, file_path in enumerate(image_files):
@@ -298,10 +298,15 @@ class ScanWorker(QThread):
                 
             photo_id, status, category = status_row
             
-            # 提取 CLIP embedding
+            # 提取 CLIP embedding (V2.3: 使用 Multi-Crop)
             if self.clip_encoder:
                 try:
-                    embedding = self.clip_encoder.encode_image(file_path)
+                    # 优先使用 multi-crop，回退到单一裁剪
+                    if hasattr(self.clip_encoder, 'encode_image_multicrop'):
+                        embedding = self.clip_encoder.encode_image_multicrop(file_path, n_crops=5)
+                    else:
+                        embedding = self.clip_encoder.encode_image(file_path)
+                    
                     if embedding is not None:
                         update_photo_embedding_by_path(file_path, embedding)
                 except Exception as e:
@@ -815,7 +820,7 @@ class ClusteringWorker(QThread):
 
 class SemanticSearchWorker(QThread):
     """
-    语义搜索工作线程
+    语义搜索工作线程 (V2.3: Prompt Ensemble)
     
     使用 CLIP 文本编码器将查询转换为向量，
     然后与数据库中的图片向量计算相似度
@@ -825,19 +830,21 @@ class SemanticSearchWorker(QThread):
     search_completed = pyqtSignal(list)  # List of (photo_id, filepath, similarity)
     error_occurred = pyqtSignal(str)
     
-    def __init__(self, query: str, top_k: int = 20, threshold: float = 0.22):
+    def __init__(self, query: str, top_k: int = 20, threshold: float = 0.25, use_ensemble: bool = True):
         """
         初始化语义搜索
         
         Args:
             query: 搜索查询文本
             top_k: 返回结果数量
-            threshold: 最低相似度阈值（低于此值不返回）
+            threshold: 最低相似度阈值（V2.3 降低阈值以适配 ensemble）
+            use_ensemble: 是否使用 Prompt Ensemble (V2.3)
         """
         super().__init__()
         self.query = query
         self.top_k = top_k
         self.threshold = threshold
+        self.use_ensemble = use_ensemble
         self.clip_encoder = None
     
     def run(self):
@@ -851,8 +858,12 @@ class SemanticSearchWorker(QThread):
                 self.error_occurred.emit("CLIP 编码器不可用")
                 return
             
-            # 编码查询文本
-            query_embedding = self.clip_encoder.encode_text(self.query)
+            # 编码查询文本 (V2.3: 使用 Prompt Ensemble)
+            if self.use_ensemble and hasattr(self.clip_encoder, 'encode_text_ensemble'):
+                query_embedding = self.clip_encoder.encode_text_ensemble(self.query)
+            else:
+                query_embedding = self.clip_encoder.encode_text(self.query)
+                
             if query_embedding is None:
                 self.error_occurred.emit("文本编码失败")
                 return
