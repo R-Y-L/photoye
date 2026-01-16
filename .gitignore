@@ -30,6 +30,9 @@ models/models/
 # Test cache
 .pytest_cache/
 
+# Test images (private data)
+tests/test_images/
+
 # OS junk
 .DS_Store
 Thumbs.db
