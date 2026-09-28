@@ -1,43 +1,30 @@
-# Photoye 开发规划与任务看板
+# Photoye 当前冲刺看板 (Sprint 1: AI理解与数据基建)
+
+> **当前聚焦阶段:** Milestone 1 (AI 理解与数据基建)  
+> **全局规划来源:** `zlog/ROADMAP.md`  
+> **核心架构标准:** `zlog/ARCHITECTURE.md`
 
 ---
 
-## 当前开发功能看板
+## 📌 当前 Sprint 任务执行看板 (高频变动)
 
-| 模块编码 | 任务名称 | 范围与交付项 | 状态 | 关联模块 |
+| 任务编码 | 任务名称 | 范围与关键交付 | 状态 | 关联模块 / 测试 |
 | :--- | :--- | :--- | :--- | :--- |
-| **M1-F1** | SQLite V3.0 Schema | 新增 `sha256`, `gps`, `companion_files`, `backup_ledger` 表与字段 | ✅ 已完成 | `data/database.py` |
-| **M1-F2** | 熟人底库多姿态质心 | 支持主质心 $\vec{C}_{\text{front}}$ 与侧脸模板 $\vec{C}_{\text{profile}}$ 存储与微调 | ✅ 已完成 | `core/ai/face_library.py` |
-| **M1-F3** | 侧脸级联识别 | 基于 5 点关键点偏航角比率，动态调用高精度模型提取特征 | 🔄 进行中 | `core/ai/` |
-| **M2-F1** | 伴侣文件探测与事务记录 | 识别同名 `.MOV`/`.XMP`/`.CR3` 等文件，写入 `undo.json` | ⏳ 待开始 | `sorter/` |
-| **M2-F2** | 规则分拣管道 | 按人物 1对多扇出分拣、优先硬链接 (`os.link`)、跨盘复制、ZIP 导出 | ⏳ 待开始 | `sorter/` |
-| **M3-F1** | 本地备份台账 | 基于分块 SHA-256 建立指纹账本，漏传对账与唤起资源管理器定位 | ⏳ 待开始 | `ledger/` |
-| **M4-F1** | 展厅与画卷导出 | 时间线索引、那年今日查询、离线逆地理编码、独立 HTML 故事导出 | ⏳ 待开始 | `gallery/` |
-| **M5-F1** | UI 视图重构 | 分拣工坊与时光展厅双入口分流，拆分原 `main.py` 单体逻辑 | ⏳ 待开始 | `ui/` |
+| **M1-F1** | SQLite V3.0 Schema | 新增 photos, companion_files, persons, faces, backup_ledger 五张表及索引 | ✅ 已完成 | `data/database.py`<br/>`tests/test_database_v3.py` |
+| **M1-F2** | 熟人底库多姿态质心 | 支持主质心 $\vec{C}_{\text{front}}$ 与侧脸模板 $\vec{C}_{\text{profile}}$ 存储、在线更新与增量聚类 | ✅ 已完成 | `core/ai/face_library.py`<br/>`tests/test_face_library.py` |
+| **M1-F3** | 自适应人像感知引擎 | 基于 5 点关键点偏航角(Yaw)与俯仰角(Pitch)评估、多姿态人脸抽取 | 🔄 进行中 | `core/ai/face_engine.py`<br/>`tests/test_real_face_engine.py` |
+| **M1-F4** | OpenCLIP 场景分类与纠偏 | 零样本多题材分类、有人脸自动纠偏为单人/合照规则引擎 | ⏳ 待开始 | `core/ai/scene_classifier.py`<br/>`tests/test_scene_classifier.py` |
+| **M1-F5** | 本地开放式语义搜索 | 纯 ONNX 文本编码、Prompt Ensemble 模板平均、自然语言搜图 | ⏳ 待开始 | `core/ai/semantic_search.py`<br/>`tests/test_semantic_search.py` |
 
 ---
 
-## 架构分层
+## 📝 当前模块开发说明 (M1-F3)
+- **目标**: 封装 `core/ai/face_engine.py`，实现 `FaceEngine` 纯 ONNX 推理。
+- **输入**: 图片路径（经由 `cv2.imdecode` 兼容中文路径）。
+- **计算**: 检出所有人脸，输出 BBox、置信度、5点关键点、512维 ArcFace 归一化向量，并由几何比率打标姿态 (`front`, `profile`, `pitch`)。
+- **输出对象**: `DetectedFace` 数据类。
+- **验收标准**: 直接运行 `tests/test_real_face_engine.py` 对 16 张真实图片进行全绿断言。
 
-```
-photoye/
-├── app.py                      # 应用程序入口
-├── core/                       # 业务逻辑层
-│   ├── ai/                     # 模型推理 (人脸检测识别、CLIP语义特征、场景分类)
-│   ├── sorter/                 # 文件分拣 (硬链接/复制、伴侣文件处理、事务与撤销)
-│   ├── ledger/                 # 云备份台账 (SHA-256 计算、备份状态对账)
-│   ├── gallery/                # 展厅服务 (时间线索引、离线逆地理编码、HTML故事导出)
-│   └── metadata/               # 元数据提取 (EXIF 解析、伴侣文件关联)
-├── data/                       # 数据持久层 (SQLite Schema 与数据访问接口)
-├── ui/                         # 界面交互层 (PyQt6 视图组件与后台任务线程)
-└── tests/                      # 自动化测试用例
-```
-
----
-
-## 核心数据结构
-
-### 1. 数据库 Schema (SQLite 3)
 
 ```sql
 -- 照片基础资产表
