@@ -13,8 +13,8 @@
 | **M1-F1** | SQLite V3.0 Schema | 新增 photos, companion_files, persons, faces, backup_ledger 五张表及索引 | ✅ 已完成 | `data/database.py`<br/>`tests/test_database_v3.py` |
 | **M1-F2** | 熟人底库多姿态质心 | 支持主质心 $\vec{C}_{\text{front}}$ 与侧脸模板 $\vec{C}_{\text{profile}}$ 存储、在线更新与增量聚类 | ✅ 已完成 | `core/ai/face_library.py`<br/>`tests/test_face_library.py` |
 | **M1-F3** | 自适应人像感知引擎 | 基于 5 点关键点偏航角(Yaw)与俯仰角(Pitch)评估、多姿态人脸抽取 | ✅ 已完成 | `core/ai/face_engine.py`<br/>`tests/test_real_face_engine.py` |
-| **M1-F4** | OpenCLIP 场景分类与纠偏 | 零样本多题材分类、有人脸自动纠偏为单人/合照规则引擎 | 🔄 进行中 | `core/ai/scene_classifier.py`<br/>`tests/test_scene_classifier.py` |
-| **M1-F5** | 本地开放式语义搜索 | 纯 ONNX 文本编码、Prompt Ensemble 模板平均、自然语言搜图 | ⏳ 待开始 | `core/ai/semantic_search.py`<br/>`tests/test_semantic_search.py` |
+| **M1-F4** | OpenCLIP 场景分类与多标签融合 | 零样本多题材分类、人像主体与场景题材正交多标签聚合引擎 | ✅ 已完成 | `core/ai/scene_classifier.py`<br/>`tests/test_scene_classifier.py` |
+| **M1-F5** | 本地开放式语义搜索 | 纯 ONNX 文本编码、Prompt Ensemble 模板平均、自然语言搜图 | 🔄 进行中 | `core/ai/semantic_search.py`<br/>`tests/test_semantic_search.py` |
 
 ---
 
