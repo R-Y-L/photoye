@@ -7,8 +7,8 @@
 | 模块编码 | 任务名称 | 范围与交付项 | 状态 | 关联模块 |
 | :--- | :--- | :--- | :--- | :--- |
 | **M1-F1** | SQLite V3.0 Schema | 新增 `sha256`, `gps`, `companion_files`, `backup_ledger` 表与字段 | ✅ 已完成 | `data/database.py` |
-| **M1-F2** | 熟人底库多姿态质心 | 支持主质心 $\vec{C}_{\text{front}}$ 与侧脸模板 $\vec{C}_{\text{profile}}$ 存储与微调 | 🔄 进行中 | `core/ai/`, `data/database.py` |
-| **M1-F3** | 侧脸级联识别 | 基于 5 点关键点偏航角比率，动态调用高精度模型提取特征 | ⏳ 待开始 | `core/ai/` |
+| **M1-F2** | 熟人底库多姿态质心 | 支持主质心 $\vec{C}_{\text{front}}$ 与侧脸模板 $\vec{C}_{\text{profile}}$ 存储与微调 | ✅ 已完成 | `core/ai/face_library.py` |
+| **M1-F3** | 侧脸级联识别 | 基于 5 点关键点偏航角比率，动态调用高精度模型提取特征 | 🔄 进行中 | `core/ai/` |
 | **M2-F1** | 伴侣文件探测与事务记录 | 识别同名 `.MOV`/`.XMP`/`.CR3` 等文件，写入 `undo.json` | ⏳ 待开始 | `sorter/` |
 | **M2-F2** | 规则分拣管道 | 按人物 1对多扇出分拣、优先硬链接 (`os.link`)、跨盘复制、ZIP 导出 | ⏳ 待开始 | `sorter/` |
 | **M3-F1** | 本地备份台账 | 基于分块 SHA-256 建立指纹账本，漏传对账与唤起资源管理器定位 | ⏳ 待开始 | `ledger/` |
