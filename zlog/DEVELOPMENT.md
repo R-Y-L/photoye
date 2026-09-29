@@ -1,6 +1,6 @@
-# Photoye 当前冲刺看板 (Sprint 1: AI理解与数据基建)
+# Photoye 当前冲刺看板 (Sprint 2: 多维规则物理分拣引擎)
 
-> **当前聚焦阶段:** Milestone 1 (AI 理解与数据基建)  
+> **当前聚焦阶段:** Milestone 2 (多维规则物理分拣引擎)  
 > **全局规划来源:** `zlog/ROADMAP.md`  
 > **核心架构标准:** `zlog/ARCHITECTURE.md`
 
@@ -10,22 +10,23 @@
 
 | 任务编码 | 任务名称 | 范围与关键交付 | 状态 | 关联模块 / 测试 |
 | :--- | :--- | :--- | :--- | :--- |
-| **M1-F1** | SQLite V3.0 Schema | 新增 photos, companion_files, persons, faces, backup_ledger 五张表及索引 | ✅ 已完成 | `data/database.py`<br/>`tests/test_database_v3.py` |
-| **M1-F2** | 熟人底库多姿态质心 | 支持主质心 $\vec{C}_{\text{front}}$ 与侧脸模板 $\vec{C}_{\text{profile}}$ 存储、在线更新与增量聚类 | ✅ 已完成 | `core/ai/face_library.py`<br/>`tests/test_face_library.py` |
-| **M1-F3** | 自适应人像感知引擎 | 基于 5 点关键点偏航角(Yaw)与俯仰角(Pitch)评估、多姿态人脸抽取 | ✅ 已完成 | `core/ai/face_engine.py`<br/>`tests/test_real_face_engine.py` |
-| **M1-F4** | OpenCLIP 场景分类与多标签融合 | 零样本多题材分类、人像主体与场景题材正交多标签聚合引擎 | ✅ 已完成 | `core/ai/scene_classifier.py`<br/>`tests/test_scene_classifier.py` |
-| **M1-F5** | 本地开放式语义搜索 | 纯 ONNX 文本编码、Prompt Ensemble 模板平均、自然语言搜图 | ✅ 已完成 | `core/ai/semantic_search.py`<br/>`tests/test_semantic_search.py` |
+| **M2-F1** | EXIF 与伴侣文件探测 | EXIF 拍摄时间/GPS 解析、同名动态视频(.MOV)及调色/RAW文件配对 | ✅ 已完成 | `core/metadata/`<br/>`tests/test_companion_scanner.py` |
+| **M2-F2** | 多维规则分发管道 | 按人物定向分拣 (合影1对多扇出)、按题材归集、按年月层级归档 | 🔄 进行中 | `core/sorter/pipeline.py`<br/>`tests/test_sort_pipeline.py` |
+| **M2-F3** | 存储操作模式 | 同磁盘优先 `os.link` 硬链接 (0空间占用)、跨磁盘流式复制、重名防灾 | ⏳ 待开始 | `core/sorter/file_ops.py`<br/>`tests/test_file_ops.py` |
+| **M2-F4** | 事务审计与一键撤销 | 写入 `photoye_run_<timestamp>.undo.json` 事务清单、回滚引擎 | ⏳ 待开始 | `core/sorter/transaction.py`<br/>`tests/test_transaction.py` |
+| **M2-F5** | 独立分包打包导出 | 整理产物按人物/分类分别压缩为独立 ZIP 文件 | ⏳ 待开始 | `core/sorter/exporter.py`<br/>`tests/test_exporter.py` |
 
 ---
 
-## 📝 当前模块开发说明 (M1-F5)
-- **目标**: 封装 `core/ai/semantic_search.py`，实现 `SemanticSearchEngine` 纯本地自然语言搜图服务。
-- **输入**: 任意自然语言生活化查询词（中英描述如“自然森林风景”、“两个人合照”、“特写人像”等）。
-- **计算**: 
-  - 文本端: 基于预置 Prompt Ensemble 多模板计算 512 维平均文本向量；
-  - 矩阵计算: 文本向量与数据库/内存中全量照片的 512 维图像特征向量进行批量余弦相似度矩阵点积；
-  - 排序过滤: 输出 Top-K 最匹配照片路径、相似度分值与多标签属性。
-- **验收标准**: 编写 `tests/test_semantic_search.py`，对测试集 16 张真实图片进行自然语言查图断言，保证搜“自然风景/树林”排名前列全为风光图，搜“合影”排名前列全为合影图。
+## 📝 当前模块开发说明 (M2-F1)
+- **目标**: 实现 `core/metadata/exif_reader.py` 与 `core/metadata/companion_scanner.py`。
+- **输入**: 原始相册文件夹路径。
+- **计算**:
+  1. 准确解析照片拍摄原始时间（DateTimeOriginal）、GPS 经纬度及相机旋转方向；
+  2. 自动扫描同目录同主名的伴侣文件（`.MOV`, `.MP4`, `.XMP`, `.AAE`, `.CR2`, `.CR3`, `.ARW`, `.NEF`, `.DNG` 等）；
+  3. 将主照片与伴侣文件绑定为不可分割的原子操作组。
+- **输出对象**: `PhotoAssetGroup`（包含主文件元数据及全部关联伴侣文件清单）。
+- **验收标准**: 编写 `tests/test_companion_scanner.py`，创建带真实 LivePhoto 视频轨与 XMP 调色文件的测试集，验证配对率 100%，时间戳与 GPS 读取无误。
 
 
 ```sql
