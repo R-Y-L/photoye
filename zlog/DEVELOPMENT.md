@@ -11,22 +11,23 @@
 | 任务编码 | 任务名称 | 范围与关键交付 | 状态 | 关联模块 / 测试 |
 | :--- | :--- | :--- | :--- | :--- |
 | **M2-F1** | EXIF 与伴侣文件探测 | EXIF 拍摄时间/GPS 解析、同名动态视频(.MOV)及调色/RAW文件配对 | ✅ 已完成 | `core/metadata/`<br/>`tests/test_companion_scanner.py` |
-| **M2-F2** | 多维规则分发管道 | 按人物定向分拣 (合影1对多扇出)、按题材归集、按年月层级归档 | 🔄 进行中 | `core/sorter/pipeline.py`<br/>`tests/test_sort_pipeline.py` |
-| **M2-F3** | 存储操作模式 | 同磁盘优先 `os.link` 硬链接 (0空间占用)、跨磁盘流式复制、重名防灾 | ⏳ 待开始 | `core/sorter/file_ops.py`<br/>`tests/test_file_ops.py` |
+| **M2-F2** | 多维规则分发管道 | 按人物定向分拣 (合影1对多扇出)、按题材归集、按年月层级归档 | ✅ 已完成 | `core/sorter/pipeline.py`<br/>`tests/test_sort_pipeline.py` |
+| **M2-F3** | 存储操作模式 | 同磁盘优先 `os.link` 硬链接 (0空间占用)、跨磁盘流式复制、重名防灾 | 🔄 进行中 | `core/sorter/file_ops.py`<br/>`tests/test_file_ops.py` |
 | **M2-F4** | 事务审计与一键撤销 | 写入 `photoye_run_<timestamp>.undo.json` 事务清单、回滚引擎 | ⏳ 待开始 | `core/sorter/transaction.py`<br/>`tests/test_transaction.py` |
 | **M2-F5** | 独立分包打包导出 | 整理产物按人物/分类分别压缩为独立 ZIP 文件 | ⏳ 待开始 | `core/sorter/exporter.py`<br/>`tests/test_exporter.py` |
 
 ---
 
-## 📝 当前模块开发说明 (M2-F1)
-- **目标**: 实现 `core/metadata/exif_reader.py` 与 `core/metadata/companion_scanner.py`。
-- **输入**: 原始相册文件夹路径。
+## 📝 当前模块开发说明 (M2-F2)
+- **目标**: 实现 `core/sorter/pipeline.py`，构建 `SortingPipeline` 多维规则物理分拣路由器。
+- **输入**: `PhotoAssetGroup` 资产单元、AI 多标签分析结果（包含人物出镜名单、场景题材标签与拍摄时间戳）。
 - **计算**:
-  1. 准确解析照片拍摄原始时间（DateTimeOriginal）、GPS 经纬度及相机旋转方向；
-  2. 自动扫描同目录同主名的伴侣文件（`.MOV`, `.MP4`, `.XMP`, `.AAE`, `.CR2`, `.CR3`, `.ARW`, `.NEF`, `.DNG` 等）；
-  3. 将主照片与伴侣文件绑定为不可分割的原子操作组。
-- **输出对象**: `PhotoAssetGroup`（包含主文件元数据及全部关联伴侣文件清单）。
-- **验收标准**: 编写 `tests/test_companion_scanner.py`，创建带真实 LivePhoto 视频轨与 XMP 调色文件的测试集，验证配对率 100%，时间戳与 GPS 读取无误。
+  1. **按人物 1 对多扇出分发 (Fan-out Dispatch)**: 若合照中同时出镜人物 Alice 和 Bob，自动路由并分发至 `人物_相册/Alice/` 与 `人物_相册/Bob/` 两个独立目标；
+  2. **按场景题材归集**: 无人物照片按题材标签路由至对应子目录（如 `题材_相册/风景/`, `题材_相册/美食/`）；
+  3. **按拍摄时间层级归档**: 若启用时间归档，依据 EXIF 拍摄时间自动构建 `时间_相册/YYYY/MM/` 目录结构；
+  4. **伴侣文件级联路由**: 每一个目标去向中，主照片的全部伴侣文件（`.mov`, `.xmp` 等）同步生成对应的伴侣目标路径，同进同退。
+- **输出对象**: `DispatchPlan`（结构化分发计划，包含每一对源文件与目标文件的完整映射，供底层存储与事务执行）。
+- **验收标准**: 编写 `tests/test_sort_pipeline.py`，模拟单人照、多人合照（1对多扇出）、纯风景照与无 EXIF 照片，验证生成的物理分发路由映射表 100% 准确无错乱。
 
 
 ```sql
