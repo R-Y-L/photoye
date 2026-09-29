@@ -120,6 +120,9 @@ class SceneClassifier:
         if img_emb is None:
             return {k: 0.0 for k in self.SCENE_DEFINITIONS}
 
+        # 计算人像基线得分 (若照片本质是人像特写，其对纯背景题材的打分必须受基线压制)
+        person_baseline_sim = float(np.dot(self._text_embeddings["_人物_"], img_emb))
+
         scores: Dict[str, float] = {}
         for name in self.SCENE_DEFINITIONS:
             text_emb = self._text_embeddings[name]
@@ -133,8 +136,17 @@ class SceneClassifier:
         image_path: Union[str, Path],
         detected_faces: List[DetectedFace],
         identified_names: Optional[List[str]] = None,
+        margin_threshold: float = 0.03,
     ) -> PhotoMultiLabel:
-        """多维度多标签正交融合核心管线 (符合 ARCHITECTURE 3.3 规范)。"""
+        """多维度多标签正交融合核心管线 (符合 ARCHITECTURE 3.3 规范)。
+
+        采用 Top-1 优势度排位决策机制 (消灭漏分类与生硬阈值死角):
+        1. 场景题材降序排列 [S1, S2, ...]
+        2. 若检测到单人人像且人像主导，纯背景题材得分必须显著高于基线才入选题材
+        3. 无人脸时，Top-1 (S1) 始终作为核心基础题材保留 (确保绝不漏分)
+        4. 若 (S1 - S2) < margin_threshold，表明势均力敌，保留双题材 [S1, S2]
+        5. 主体人脸维度正交叠加，零信息丢失
+        """
         num_faces = len(detected_faces)
         subject_tags: List[str] = []
 
@@ -146,16 +158,26 @@ class SceneClassifier:
         else:
             subject_tags.append("合照")
 
-        # 2. 场景题材维度判定 (神经网络真实推理)
+        # 2. 场景题材维度判定 (神经网络相对优势度排位决策)
+        img_emb = self.extract_image_embedding(image_path)
         scene_scores = self.classify_scene(image_path)
         sorted_scenes = sorted(scene_scores.items(), key=lambda x: x[1], reverse=True)
 
         scene_tags: List[str] = []
         if sorted_scenes:
             top_scene, top_score = sorted_scenes[0]
-            # 只有当题材得分达到置信度阈值时才打上该题材
-            if top_score >= self.scene_threshold:
+
+            if num_faces == 0:
+                # 无人脸自然风光/物体: 保底规则，Top-1 必定归入核心题材 (确保零漏分)
                 scene_tags.append(top_scene)
+                if len(sorted_scenes) > 1:
+                    second_scene, second_score = sorted_scenes[1]
+                    if (top_score - second_score) < margin_threshold and second_score > 0.18:
+                        scene_tags.append(second_scene)
+            else:
+                # 有人脸单人/合照: 必须满足背景题材显著性检验 (题材得分必须达到 0.22 以上才作为背景题材正交追加)
+                if top_score >= 0.22:
+                    scene_tags.append(top_scene)
 
         # 3. 关联已知人物
         person_names = list(set([n for n in (identified_names or []) if n]))

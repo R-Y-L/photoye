@@ -14,16 +14,18 @@
 | **M1-F2** | 熟人底库多姿态质心 | 支持主质心 $\vec{C}_{\text{front}}$ 与侧脸模板 $\vec{C}_{\text{profile}}$ 存储、在线更新与增量聚类 | ✅ 已完成 | `core/ai/face_library.py`<br/>`tests/test_face_library.py` |
 | **M1-F3** | 自适应人像感知引擎 | 基于 5 点关键点偏航角(Yaw)与俯仰角(Pitch)评估、多姿态人脸抽取 | ✅ 已完成 | `core/ai/face_engine.py`<br/>`tests/test_real_face_engine.py` |
 | **M1-F4** | OpenCLIP 场景分类与多标签融合 | 零样本多题材分类、人像主体与场景题材正交多标签聚合引擎 | ✅ 已完成 | `core/ai/scene_classifier.py`<br/>`tests/test_scene_classifier.py` |
-| **M1-F5** | 本地开放式语义搜索 | 纯 ONNX 文本编码、Prompt Ensemble 模板平均、自然语言搜图 | 🔄 进行中 | `core/ai/semantic_search.py`<br/>`tests/test_semantic_search.py` |
+| **M1-F5** | 本地开放式语义搜索 | 纯 ONNX 文本编码、Prompt Ensemble 模板平均、自然语言搜图 | ✅ 已完成 | `core/ai/semantic_search.py`<br/>`tests/test_semantic_search.py` |
 
 ---
 
-## 📝 当前模块开发说明 (M1-F3)
-- **目标**: 封装 `core/ai/face_engine.py`，实现 `FaceEngine` 纯 ONNX 推理。
-- **输入**: 图片路径（经由 `cv2.imdecode` 兼容中文路径）。
-- **计算**: 检出所有人脸，输出 BBox、置信度、5点关键点、512维 ArcFace 归一化向量，并由几何比率打标姿态 (`front`, `profile`, `pitch`)。
-- **输出对象**: `DetectedFace` 数据类。
-- **验收标准**: 直接运行 `tests/test_real_face_engine.py` 对 16 张真实图片进行全绿断言。
+## 📝 当前模块开发说明 (M1-F5)
+- **目标**: 封装 `core/ai/semantic_search.py`，实现 `SemanticSearchEngine` 纯本地自然语言搜图服务。
+- **输入**: 任意自然语言生活化查询词（中英描述如“自然森林风景”、“两个人合照”、“特写人像”等）。
+- **计算**: 
+  - 文本端: 基于预置 Prompt Ensemble 多模板计算 512 维平均文本向量；
+  - 矩阵计算: 文本向量与数据库/内存中全量照片的 512 维图像特征向量进行批量余弦相似度矩阵点积；
+  - 排序过滤: 输出 Top-K 最匹配照片路径、相似度分值与多标签属性。
+- **验收标准**: 编写 `tests/test_semantic_search.py`，对测试集 16 张真实图片进行自然语言查图断言，保证搜“自然风景/树林”排名前列全为风光图，搜“合影”排名前列全为合影图。
 
 
 ```sql

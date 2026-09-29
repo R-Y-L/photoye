@@ -8,6 +8,11 @@ from .face_library import (
     normalize_vector,
 )
 from .scene_classifier import PhotoMultiLabel, SceneClassifier
+from .semantic_search import (
+    PROMPT_TEMPLATES,
+    SearchResultItem,
+    SemanticSearchEngine,
+)
 
 __all__ = [
     "DetectedFace",
@@ -16,6 +21,9 @@ __all__ = [
     "FaceMatchResult",
     "PhotoMultiLabel",
     "SceneClassifier",
+    "SearchResultItem",
+    "SemanticSearchEngine",
+    "PROMPT_TEMPLATES",
     "compute_centroid",
     "compute_similarity",
     "normalize_vector",
