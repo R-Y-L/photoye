@@ -76,7 +76,7 @@ def install_dependencies(missing_deps):
 
 def check_main_files():
     """检查主程序文件是否存在"""
-    required_files = ['main.py', 'database.py', 'analyzer.py', 'worker.py']
+    required_files = ['app.py', 'data/database.py', 'core/ai/face_engine.py', 'core/sorter/pipeline.py']
     missing_files = []
     
     print("\n检查程序文件...")
@@ -92,7 +92,7 @@ def check_main_files():
 def main():
     """主函数"""
     print("=" * 50)
-    print("🎯 Photoye 本地智能照片管理工具")
+    print("🎯 Photoye 本地智能照片管理工具 (V3.0)")
     print("=" * 50)
     
     # 检查Python版本
@@ -116,12 +116,12 @@ def main():
             return
     
     print("\n" + "=" * 50)
-    print("🚀 启动 Photoye...")
+    print("🚀 启动 Photoye V3.0 桌面应用程序...")
     print("=" * 50)
     
     try:
-        # 导入并运行主程序
-        from main import main as photoye_main
+        # 导入并运行 V3.0 主程序
+        from app import main as photoye_main
         photoye_main()
         
     except ImportError as e:

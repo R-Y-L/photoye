@@ -1,6 +1,6 @@
-# Photoye 当前冲刺看板 (Sprint 2: 多维规则物理分拣引擎)
+# Photoye 当前冲刺看板 (Sprint 2: 整理工坊 UI 装配与物理分拣引擎)
 
-> **当前聚焦阶段:** Milestone 2 (多维规则物理分拣引擎)  
+> **当前聚焦阶段:** Milestone 2 (整理工坊 UI 界面装配 + 物理分拣落地)  
 > **全局规划来源:** `zlog/ROADMAP.md`  
 > **核心架构标准:** `zlog/ARCHITECTURE.md`
 
@@ -12,22 +12,20 @@
 | :--- | :--- | :--- | :--- | :--- |
 | **M2-F1** | EXIF 与伴侣文件探测 | EXIF 拍摄时间/GPS 解析、同名动态视频(.MOV)及调色/RAW文件配对 | ✅ 已完成 | `core/metadata/`<br/>`tests/test_companion_scanner.py` |
 | **M2-F2** | 多维规则分发管道 | 按人物定向分拣 (合影1对多扇出)、按题材归集、按年月层级归档 | ✅ 已完成 | `core/sorter/pipeline.py`<br/>`tests/test_sort_pipeline.py` |
+| **M2-UI** | 智能整理工坊桌面界面 | 基于 PyQt6 实现左侧候选缩略图流 + 动态漏斗筛选 + 右侧去向篮子卡片 | ✅ 已完成 | `app.py`, `ui/views/sorter_view.py`<br/>支持双击直启桌面测试 |
 | **M2-F3** | 存储操作模式 | 同磁盘优先 `os.link` 硬链接 (0空间占用)、跨磁盘流式复制、重名防灾 | 🔄 进行中 | `core/sorter/file_ops.py`<br/>`tests/test_file_ops.py` |
 | **M2-F4** | 事务审计与一键撤销 | 写入 `photoye_run_<timestamp>.undo.json` 事务清单、回滚引擎 | ⏳ 待开始 | `core/sorter/transaction.py`<br/>`tests/test_transaction.py` |
 | **M2-F5** | 独立分包打包导出 | 整理产物按人物/分类分别压缩为独立 ZIP 文件 | ⏳ 待开始 | `core/sorter/exporter.py`<br/>`tests/test_exporter.py` |
 
 ---
 
-## 📝 当前模块开发说明 (M2-F2)
-- **目标**: 实现 `core/sorter/pipeline.py`，构建 `SortingPipeline` 多维规则物理分拣路由器。
-- **输入**: `PhotoAssetGroup` 资产单元、AI 多标签分析结果（包含人物出镜名单、场景题材标签与拍摄时间戳）。
-- **计算**:
-  1. **按人物 1 对多扇出分发 (Fan-out Dispatch)**: 若合照中同时出镜人物 Alice 和 Bob，自动路由并分发至 `人物_相册/Alice/` 与 `人物_相册/Bob/` 两个独立目标；
-  2. **按场景题材归集**: 无人物照片按题材标签路由至对应子目录（如 `题材_相册/风景/`, `题材_相册/美食/`）；
-  3. **按拍摄时间层级归档**: 若启用时间归档，依据 EXIF 拍摄时间自动构建 `时间_相册/YYYY/MM/` 目录结构；
-  4. **伴侣文件级联路由**: 每一个目标去向中，主照片的全部伴侣文件（`.mov`, `.xmp` 等）同步生成对应的伴侣目标路径，同进同退。
-- **输出对象**: `DispatchPlan`（结构化分发计划，包含每一对源文件与目标文件的完整映射，供底层存储与事务执行）。
-- **验收标准**: 编写 `tests/test_sort_pipeline.py`，模拟单人照、多人合照（1对多扇出）、纯风景照与无 EXIF 照片，验证生成的物理分发路由映射表 100% 准确无错乱。
+## 📝 当前模块开发说明 (M2-UI)
+- **目标**: 实现全新的独立桌面程序入口 `app.py` 及整理工坊主视图 `ui/views/sorter_view.py`。
+- **界面结构**:
+  - 顶部导航栏: 目录选择器 `[📂 选择相册文件夹]`、扫描进度条、AI 分析状态；
+  - 左侧面板: 多维快捷漏斗标签（全部/单人/合照/各人物/题材）+ 候选照片缩略图流式网格展示，支持单击选中；
+  - 右侧面板: 动态去向篮子列表（卡片式展现，直观显示每个篮子装入的照片与伴侣文件数量，提供一键加入操作）；
+- **验收标准**: 执行 `python app.py` 能够秒级弹出独立桌面 GUI 窗口，能浏览 `tests/test_images` 照片，点选漏斗与操作篮子顺畅无报错。
 
 
 ```sql
