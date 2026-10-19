@@ -200,7 +200,7 @@ class DroppableBasketCard(CardWidget):
                 else:
                     thumb.setText("预览不可用")
                 stem = g.main_photo_path.stem
-                thumb.clicked.connect(lambda checked, s=stem: self.preview_requested.emit(s))
+                thumb.clicked.connect(lambda checked, path=str(g.main_photo_path): self.preview_requested.emit(path))
                 cell_layout.addWidget(thumb)
 
                 lbl_fname = CaptionLabel(cell)
@@ -338,6 +338,7 @@ class SorterWorkshopView(QWidget):
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.asset_groups: List[PhotoAssetGroup] = []
+        self.visible_asset_groups: List[PhotoAssetGroup] = []
         self.labels_map: Dict[str, PhotoMultiLabel] = {}
         self.image_matrix: Optional[np.ndarray] = None
         self.search_similarity_scores: Dict[str, float] = {}
@@ -620,6 +621,7 @@ class SorterWorkshopView(QWidget):
 
     def _render_photo_list(self) -> None:
         self.photo_list_widget.clear()
+        self.visible_asset_groups = []
 
         groups_to_show = list(self.asset_groups)
         if self.search_similarity_scores:
@@ -670,6 +672,7 @@ class SorterWorkshopView(QWidget):
             item.setToolTip("\n".join(details))
             item.setData(Qt.ItemDataRole.UserRole, stem)
             self.photo_list_widget.addItem(item)
+            self.visible_asset_groups.append(g)
 
         visible_count = self.photo_list_widget.count()
         self.lbl_photo_count.setText(f"{visible_count} / {len(self.asset_groups)} 组")
@@ -721,7 +724,7 @@ class SorterWorkshopView(QWidget):
             card.rename_requested.connect(self._on_basket_rename_requested)
             card.remove_photo_requested.connect(self._on_basket_remove_photo)
             card.delete_basket_requested.connect(self._on_basket_delete_requested)
-            card.preview_requested.connect(self._preview_photo)
+            card.preview_requested.connect(lambda path, groups=basket_groups: self._preview_photo(path, groups))
 
             self.basket_cards_layout.insertWidget(self.basket_cards_layout.count() - 1, card)
 
@@ -824,10 +827,13 @@ class SorterWorkshopView(QWidget):
 
     def _on_photo_item_double_clicked(self, item: QListWidgetItem) -> None:
         """双击左侧照片弹出高清大图检视窗"""
-        self._preview_photo(item.data(Qt.ItemDataRole.UserRole))
+        row = self.photo_list_widget.row(item)
+        if 0 <= row < len(self.visible_asset_groups):
+            self._preview_photo(str(self.visible_asset_groups[row].main_photo_path), self.visible_asset_groups)
 
-    def _preview_photo(self, stem: str) -> None:
-        matched_group = [g for g in self.asset_groups if g.main_photo_path.stem == stem]
+    def _preview_photo(self, identifier: str, groups: Optional[List[PhotoAssetGroup]] = None) -> None:
+        sequence = groups if groups is not None else self.visible_asset_groups
+        matched_group = [g for g in sequence if str(g.main_photo_path) == identifier]
         if not matched_group:
             return
 
@@ -835,6 +841,6 @@ class SorterWorkshopView(QWidget):
         label = self.labels_map.get(g.main_photo_path.name)
 
         from ui.views.preview_dialog import PhotoPreviewDialog
-        dlg = PhotoPreviewDialog(asset_group=g, label=label, parent=self)
+        dlg = PhotoPreviewDialog(asset_group=g, label=label, parent=self, asset_groups=sequence, labels_map=self.labels_map)
         dlg.exec()
 

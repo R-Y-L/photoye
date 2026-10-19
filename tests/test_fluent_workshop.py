@@ -8,11 +8,11 @@ from unittest.mock import Mock
 import numpy as np
 import pytest
 from PIL import Image
-from PyQt6.QtCore import QByteArray, QMimeData, QPoint, QPointF, Qt, QTimer
-from PyQt6.QtGui import QDragEnterEvent, QDropEvent
+from PyQt6.QtCore import QByteArray, QEvent, QMimeData, QPoint, QPointF, Qt, QTimer
+from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QMouseEvent, QWheelEvent
 from PyQt6.QtTest import QSignalSpy, QTest
 from PyQt6.QtWidgets import QApplication
-from qfluentwidgets import CaptionLabel, LineEdit, MessageBoxBase, PrimaryPushButton, PushButton, SearchLineEdit, SmoothScrollArea
+from qfluentwidgets import BodyLabel, CaptionLabel, LineEdit, MessageBoxBase, PrimaryPushButton, PushButton, SearchLineEdit, SmoothScrollArea, StrongBodyLabel
 
 from app import PhotoyeApplication
 from core.ai.scene_classifier import PhotoMultiLabel
@@ -218,7 +218,7 @@ def test_basket_preview_opens_real_dialog(view, album, monkeypatch, qapp):
     def inspect_dialog(dialog):
         dialog.show()
         qapp.processEvents()
-        assert not dialog.lbl_image.pixmap().isNull()
+        assert not dialog.image_area.image_item.pixmap().isNull()
         assert dialog.asset_group.main_photo_path == album[0][0].main_photo_path
         opened.append(dialog)
         dialog.close()
@@ -236,16 +236,258 @@ def test_preview_resizes_without_distortion(qapp, album):
     try:
         dialog.show()
         qapp.processEvents()
-        first = dialog.lbl_image.pixmap().size()
+        first = dialog.image_area.transform().mapRect(dialog.image_area.image_item.boundingRect()).size()
         assert first.width() / first.height() == pytest.approx(1.6, abs=0.01)
         assert any(label.text() == "风景" for label in dialog.findChildren(CaptionLabel))
         dialog.resize(800, 550)
         qapp.processEvents()
-        smaller = dialog.lbl_image.pixmap().size()
+        smaller = dialog.image_area.transform().mapRect(dialog.image_area.image_item.boundingRect()).size()
         assert smaller.width() < first.width()
         assert smaller.width() / smaller.height() == pytest.approx(1.6, abs=0.01)
         QTest.mouseClick(dialog.btn_close, Qt.MouseButton.LeftButton)
         assert not dialog.isVisible()
+    finally:
+        dialog.close()
+
+
+@pytest.fixture
+def preview(qapp, album):
+    dialog = PhotoPreviewDialog(album[0][0], album[1]["lake.jpg"], asset_groups=album[0], labels_map=album[1])
+    dialog.resize(900, 620)
+    dialog.show()
+    dialog.activateWindow()
+    qapp.processEvents()
+    yield dialog
+    dialog.close()
+    dialog.deleteLater()
+    qapp.processEvents()
+
+
+def send_wheel(image_view, delta, position=None, modifiers=Qt.KeyboardModifier.NoModifier):
+    viewport = image_view.viewport()
+    position = position or viewport.rect().center()
+    event = QWheelEvent(
+        QPointF(position), QPointF(viewport.mapToGlobal(position)), QPoint(), QPoint(0, delta),
+        Qt.MouseButton.NoButton, modifiers, Qt.ScrollPhase.NoScrollPhase, False,
+    )
+    QApplication.sendEvent(viewport, event)
+    assert event.isAccepted()
+
+
+def test_preview_wheel_zoom_buttons_and_limits(preview, qapp):
+    image = preview.image_area
+    fitted = image.zoom
+    send_wheel(image, 120, modifiers=Qt.KeyboardModifier.ControlModifier)
+    assert image.zoom == pytest.approx(fitted * 1.2)
+    assert not image.fit_mode
+    assert preview.current_index == 0
+    send_wheel(image, -120, modifiers=Qt.KeyboardModifier.ControlModifier)
+    assert image.zoom == pytest.approx(fitted)
+    QTest.mouseClick(preview.btn_zoom_in, Qt.MouseButton.LeftButton)
+    assert image.zoom > fitted
+    QTest.mouseClick(preview.btn_zoom_out, Qt.MouseButton.LeftButton)
+    assert image.zoom == pytest.approx(fitted)
+    QTest.mouseClick(preview.btn_actual, Qt.MouseButton.LeftButton)
+    assert image.zoom == pytest.approx(1.0)
+    assert preview.lbl_zoom.text() == "100%"
+    for _ in range(20):
+        send_wheel(image, 480, modifiers=Qt.KeyboardModifier.ControlModifier)
+    assert image.zoom == pytest.approx(8.0)
+    for _ in range(20):
+        send_wheel(image, -480, modifiers=Qt.KeyboardModifier.ControlModifier)
+    assert image.zoom == pytest.approx(0.05)
+    assert preview.current_index == 0
+    QTest.mouseClick(preview.btn_fit, Qt.MouseButton.LeftButton)
+    assert image.fit_mode
+    assert image.zoom == pytest.approx(fitted)
+    qapp.processEvents()
+
+
+def test_preview_wheel_anchor_drag_and_double_click(preview, qapp):
+    image = preview.image_area
+    QTest.mouseClick(preview.btn_actual, Qt.MouseButton.LeftButton)
+    for _ in range(5):
+        QTest.mouseClick(preview.btn_zoom_in, Qt.MouseButton.LeftButton)
+    qapp.processEvents()
+    viewport = image.viewport()
+    anchor = viewport.rect().center() + QPoint(20, 15)
+    before = image.mapToScene(anchor)
+    send_wheel(image, 120, anchor, Qt.KeyboardModifier.ControlModifier)
+    after = image.mapToScene(anchor)
+    assert abs(before.x() - after.x()) < 1.0
+    assert abs(before.y() - after.y()) < 1.0
+    start = viewport.rect().center()
+    end = start - QPoint(40, 30)
+    h_before = image.horizontalScrollBar().value()
+    v_before = image.verticalScrollBar().value()
+    QTest.mousePress(viewport, Qt.MouseButton.LeftButton, pos=start)
+    move = QMouseEvent(QEvent.Type.MouseMove, QPointF(end), QPointF(viewport.mapToGlobal(end)),
+                       Qt.MouseButton.NoButton, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
+    QApplication.sendEvent(viewport, move)
+    QTest.mouseRelease(viewport, Qt.MouseButton.LeftButton, pos=end)
+    assert image.horizontalScrollBar().value() > h_before
+    assert image.verticalScrollBar().value() > v_before
+    QTest.mouseDClick(viewport, Qt.MouseButton.LeftButton, pos=start)
+    assert image.fit_mode
+    QTest.mouseDClick(viewport, Qt.MouseButton.LeftButton, pos=start)
+    assert not image.fit_mode
+    assert image.zoom == pytest.approx(1.0)
+
+
+def test_preview_keyboard_navigation_syncs_details_and_boundaries(preview, album, qapp):
+    assert not preview.btn_previous.isEnabled()
+    assert preview.lbl_position.text() == "1 / 2"
+    QTest.keyClick(preview.image_area.viewport(), Qt.Key.Key_Left)
+    assert preview.current_index == 0
+    QTest.mouseClick(preview.btn_zoom_in, Qt.MouseButton.LeftButton)
+    assert not preview.image_area.fit_mode
+    QTest.keyClick(preview.image_area.viewport(), Qt.Key.Key_Right)
+    qapp.processEvents()
+    assert preview.asset_group is album[0][1]
+    assert preview.current_index == 1
+    assert preview.label is album[1]["city.jpg"]
+    assert "city.jpg" in preview.windowTitle()
+    assert preview.lbl_position.text() == "2 / 2"
+    assert not preview.btn_next.isEnabled()
+    assert preview.image_area.fit_mode
+    details = preview.detail_scroll.widget()
+    assert [label.text() for label in details.findChildren(CaptionLabel, "tagBadge")] == ["建筑", "无人物"]
+    assert any(label.text() == "伴侣文件 · 0" for label in details.findChildren(StrongBodyLabel))
+    QTest.keyClick(preview.btn_close, Qt.Key.Key_Right)
+    assert preview.current_index == 1
+    QTest.keyClick(preview.btn_close, Qt.Key.Key_Left)
+    assert preview.asset_group is album[0][0]
+    assert "lake.xmp" in "\n".join(label.text() for label in preview.detail_scroll.widget().findChildren(BodyLabel))
+    QTest.mouseClick(preview.btn_next, Qt.MouseButton.LeftButton)
+    assert preview.current_index == 1
+    QTest.mouseClick(preview.btn_previous, Qt.MouseButton.LeftButton)
+    assert preview.current_index == 0
+    QTest.keyClick(preview, Qt.Key.Key_Escape)
+    assert not preview.isVisible()
+
+
+def test_preview_keyboard_zoom_and_resize_modes(preview, qapp):
+    QTest.keyClick(preview.image_area.viewport(), Qt.Key.Key_1)
+    assert preview.image_area.zoom == pytest.approx(1.0)
+    QTest.keyClick(preview.image_area.viewport(), Qt.Key.Key_Equal)
+    assert preview.image_area.zoom == pytest.approx(1.2)
+    QTest.keyClick(preview.image_area.viewport(), Qt.Key.Key_Minus)
+    assert preview.image_area.zoom == pytest.approx(1.0)
+    preview.resize(800, 550)
+    qapp.processEvents()
+    assert preview.image_area.zoom == pytest.approx(1.0)
+    QTest.keyClick(preview.image_area.viewport(), Qt.Key.Key_0)
+    assert preview.image_area.fit_mode
+    fitted = preview.image_area.zoom
+    preview.resize(1040, 720)
+    qapp.processEvents()
+    assert preview.image_area.zoom > fitted
+    for button in (preview.btn_previous, preview.btn_next, preview.btn_fit, preview.btn_actual, preview.btn_zoom_in):
+        assert preview.rect().contains(button.mapTo(preview, button.rect().bottomRight()))
+
+
+def test_preview_missing_image_can_navigate_to_valid(qapp, album, tmp_path):
+    missing = PhotoAssetGroup(main_photo_path=tmp_path / "missing.jpg", filesize=0)
+    dialog = PhotoPreviewDialog(missing, asset_groups=[missing, album[0][0]], labels_map=album[1])
+    try:
+        dialog.show()
+        dialog.activateWindow()
+        qapp.processEvents()
+        assert dialog.image_area.error_item.isVisible()
+        assert not dialog.btn_zoom_in.isEnabled()
+        send_wheel(dialog.image_area, -120, modifiers=Qt.KeyboardModifier.ControlModifier)
+        assert dialog.image_area.image_item.pixmap().isNull()
+        assert dialog.current_index == 0
+        send_wheel(dialog.image_area, -120)
+        assert not dialog.image_area.error_item.isVisible()
+        assert dialog.btn_zoom_in.isEnabled()
+        assert not dialog.image_area.image_item.pixmap().isNull()
+    finally:
+        dialog.close()
+
+
+def test_preview_plain_wheel_navigates_without_zooming(preview, album):
+    image = preview.image_area
+    QTest.mouseClick(preview.btn_actual, Qt.MouseButton.LeftButton)
+    send_wheel(image, 120)
+    assert preview.current_index == 0
+    assert image.zoom == pytest.approx(1.0)
+    send_wheel(image, -120)
+    assert preview.asset_group is album[0][1]
+    assert preview.lbl_position.text() == "2 / 2"
+    assert preview.label is album[1]["city.jpg"]
+    assert image.fit_mode
+    fitted = image.zoom
+    send_wheel(image, -120)
+    assert preview.current_index == 1
+    assert image.zoom == pytest.approx(fitted)
+    send_wheel(image, 120, modifiers=Qt.KeyboardModifier.ControlModifier)
+    assert image.zoom == pytest.approx(fitted * 1.2)
+    assert preview.current_index == 1
+    send_wheel(image, 120)
+    assert preview.asset_group is album[0][0]
+    assert image.fit_mode
+
+
+def test_preview_details_wheel_scrolls_without_switching(preview, album, qapp):
+    label = album[1]["lake.jpg"]
+    label.all_tags = [f"测试标签 {index}" for index in range(40)]
+    preview._show_photo()
+    qapp.processEvents()
+    scroll = preview.detail_scroll
+    assert scroll.verticalScrollBar().maximum() > 0
+    navigation = QSignalSpy(preview.image_area.navigation_requested)
+    changed = QSignalSpy(scroll.verticalScrollBar().valueChanged)
+    send_wheel(scroll, -120)
+    if scroll.verticalScrollBar().value() == 0:
+        assert changed.wait(1000)
+    assert scroll.verticalScrollBar().value() > 0
+    assert preview.current_index == 0
+    assert len(navigation) == 0
+
+
+def test_preview_sequence_respects_grid_order_and_basket_scope(view, album, monkeypatch, qapp):
+    view._on_analysis_finished(*album)
+    seen = []
+
+    def inspect_dialog(dialog):
+        dialog.show()
+        qapp.processEvents()
+        seen.append(([g.main_photo_path.name for g in dialog.asset_groups], dialog.current_index))
+        dialog.close()
+        return 0
+
+    monkeypatch.setattr(PhotoPreviewDialog, "exec", inspect_dialog)
+    view.search_similarity_scores = {"city.jpg": 0.9, "lake.jpg": 0.2}
+    view._render_photo_list()
+    view.photo_list_widget.itemDoubleClicked.emit(view.photo_list_widget.item(1))
+    assert seen[-1] == (["city.jpg", "lake.jpg"], 1)
+    view._on_filter_changed("建筑")
+    view.photo_list_widget.itemDoubleClicked.emit(view.photo_list_widget.item(0))
+    assert seen[-1] == (["city.jpg"], 0)
+    qapp.processEvents()
+    card = next(c for c in active_cards(view) if c.basket.rule.scene_tags == ["风景"])
+    QTest.mouseClick(card.findChild(PushButton, "basketThumbnail"), Qt.MouseButton.LeftButton)
+    assert seen[-1] == (["lake.jpg"], 0)
+
+
+def test_single_photo_preview_keeps_wheel_and_key_boundaries(qapp, album):
+    dialog = PhotoPreviewDialog(album[0][0], album[1]["lake.jpg"])
+    try:
+        dialog.show()
+        dialog.activateWindow()
+        qapp.processEvents()
+        assert not dialog.btn_previous.isEnabled()
+        assert not dialog.btn_next.isEnabled()
+        assert dialog.lbl_position.text() == "1 / 1"
+        for delta in (-120, 120, 0):
+            send_wheel(dialog.image_area, delta)
+        for key in (Qt.Key.Key_Left, Qt.Key.Key_Right):
+            QTest.keyClick(dialog.image_area.viewport(), key)
+        assert dialog.current_index == 0
+        fitted = dialog.image_area.zoom
+        send_wheel(dialog.image_area, 120, modifiers=Qt.KeyboardModifier.ControlModifier)
+        assert dialog.image_area.zoom == pytest.approx(fitted * 1.2)
     finally:
         dialog.close()
 
