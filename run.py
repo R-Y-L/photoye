@@ -23,6 +23,7 @@ def check_dependencies():
     """检查必要的依赖包 (V3.0 纯 ONNX 运行时)"""
     dependencies = [
         ('PyQt6', 'PyQt6'),
+        ('qfluentwidgets', 'PyQt6-Fluent-Widgets'),
         ('PIL', 'Pillow'),
         ('numpy', 'numpy'),
         ('sklearn', 'scikit-learn'),

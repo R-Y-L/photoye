@@ -34,10 +34,13 @@ class BasketFilterRule:
 class DispatchBasket:
     """分发去向篮子对象 (代表一个朋友相册、事件相册或分类归档)"""
     basket_id: str                                             # 篮子唯一 ID
-    name: str                                                  # 显示名称 (如 "Alice_相册", "5月20日活动专刊")
-    output_subfolder: str                                      # 相对输出子目录 (如 "Alice")
+    name: str                                                  # 显示名称 (用户可随时修改，如 "云南旅行_精选")
+    output_subfolder: str                                      # 相对输出子目录 (用户可随时修改，如 "云南旅行/YouYu")
     rule: Optional[BasketFilterRule] = None                    # 自动吸附规则
-    manual_photo_stems: Set[str] = field(default_factory=set)  # 用户界面手动拖入/勾选追加的主照片主干名集合
+    manual_photo_stems: Set[str] = field(default_factory=set)  # 用户手动拖入/追加的主照片主干名集合
+    excluded_photo_stems: Set[str] = field(default_factory=set)# 用户显式移出/排除的主照片主干名集合 (黑名单机制)
+    naming_pattern: str = "original"                           # 命名模板: "original" (原名), "date" (时间), "prefix" (自定义前缀)
+    custom_prefix: str = ""                                    # 自定义前缀文本 (如 "YouYu_")
 
 
 @dataclass
@@ -147,13 +150,37 @@ class SortingPipeline:
 
         return baskets
 
+    @staticmethod
+    def _compute_target_filename(
+        group: PhotoAssetGroup,
+        suffix: str,
+        naming_pattern: str,
+        custom_prefix: str,
+        seq_idx: int,
+    ) -> str:
+        """根据命名模式计算落地的目标文件名 (保证主图与伴侣文件共享相同前缀与序号)。"""
+        if naming_pattern == "date" and group.created_at:
+            try:
+                # 转换为 "20260520_183000"
+                dt = datetime.datetime.fromisoformat(group.created_at)
+                base = dt.strftime("%Y%m%d_%H%M%S")
+                return f"{base}{suffix}"
+            except Exception:
+                pass
+        elif naming_pattern == "prefix" and custom_prefix.strip():
+            clean_pre = custom_prefix.strip()
+            return f"{clean_pre}_{seq_idx:03d}{suffix}"
+
+        # 默认原名
+        return f"{group.main_photo_path.stem}{suffix}"
+
     def plan_dispatch(
         self,
         asset_groups: List[PhotoAssetGroup],
         labels_map: Dict[str, PhotoMultiLabel],
         baskets: List[DispatchBasket],
     ) -> DispatchPlan:
-        """结合自动规则与手工追加，为所有指定篮子生成具体的物理文件分发动作。"""
+        """结合自动规则、手工追加、显式排除与重命名模板，为所有指定篮子生成具体的物理文件分发动作。"""
         plan = DispatchPlan(output_root=self.output_root, baskets=baskets)
         actions: List[DispatchAction] = []
         counts: Dict[str, int] = {b.basket_id: 0 for b in baskets}
@@ -161,9 +188,14 @@ class SortingPipeline:
         for basket in baskets:
             target_folder = self.output_root / basket.output_subfolder
             handled_stems_for_basket: Set[str] = set()
+            seq_counter = 1
 
             for group in asset_groups:
                 stem_lower = group.main_photo_path.stem.lower()
+                # 排除黑名单保护: 若用户手动移除了该照片，坚决不在本篮子落地
+                if stem_lower in [s.lower() for s in basket.excluded_photo_stems]:
+                    continue
+
                 label = labels_map.get(group.main_photo_path.name) or labels_map.get(str(group.main_photo_path))
 
                 is_manual = (stem_lower in [s.lower() for s in basket.manual_photo_stems])
@@ -175,29 +207,42 @@ class SortingPipeline:
                     handled_stems_for_basket.add(stem_lower)
                     reason_desc = "manual_drag" if is_manual else "auto_rule"
 
+                    # 计算目标主文件名
+                    target_main_name = self._compute_target_filename(
+                        group=group,
+                        suffix=group.main_photo_path.suffix,
+                        naming_pattern=basket.naming_pattern,
+                        custom_prefix=basket.custom_prefix,
+                        seq_idx=seq_counter,
+                    )
+
                     # 1. 主照片动作
                     actions.append(
                         DispatchAction(
                             source_path=group.main_photo_path,
-                            target_path=target_folder / group.main_photo_path.name,
+                            target_path=target_folder / target_main_name,
                             basket_id=basket.basket_id,
                             is_companion=False,
                             reason=reason_desc,
                         )
                     )
 
-                    # 2. 伴侣文件镜像级联动作 (同进同退)
+                    # 2. 伴侣文件镜像级联动作 (共享相同的新 stem，同进同退)
+                    main_stem_new = Path(target_main_name).stem
                     for comp in group.companions:
+                        comp_target_name = f"{main_stem_new}{comp.filepath.suffix}"
                         actions.append(
                             DispatchAction(
                                 source_path=comp.filepath,
-                                target_path=target_folder / comp.filepath.name,
+                                target_path=target_folder / comp_target_name,
                                 basket_id=basket.basket_id,
                                 is_companion=True,
                                 companion_type=comp.file_type,
                                 reason=reason_desc,
                             )
                         )
+
+                    seq_counter += 1
 
             counts[basket.basket_id] = len(handled_stems_for_basket)
 

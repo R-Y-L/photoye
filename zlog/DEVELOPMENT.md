@@ -12,20 +12,22 @@
 | :--- | :--- | :--- | :--- | :--- |
 | **M2-F1** | EXIF 与伴侣文件探测 | EXIF 拍摄时间/GPS 解析、同名动态视频(.MOV)及调色/RAW文件配对 | ✅ 已完成 | `core/metadata/`<br/>`tests/test_companion_scanner.py` |
 | **M2-F2** | 多维规则分发管道 | 按人物定向分拣 (合影1对多扇出)、按题材归集、按年月层级归档 | ✅ 已完成 | `core/sorter/pipeline.py`<br/>`tests/test_sort_pipeline.py` |
-| **M2-UI** | 智能整理工坊桌面界面 | 基于 PyQt6 实现左侧候选缩略图流 + 动态漏斗筛选 + 右侧去向篮子卡片 | ✅ 已完成 | `app.py`, `ui/views/sorter_view.py`<br/>支持双击直启桌面测试 |
-| **M2-F3** | 存储操作模式 | 同磁盘优先 `os.link` 硬链接 (0空间占用)、跨磁盘流式复制、重名防灾 | 🔄 进行中 | `core/sorter/file_ops.py`<br/>`tests/test_file_ops.py` |
-| **M2-F4** | 事务审计与一键撤销 | 写入 `photoye_run_<timestamp>.undo.json` 事务清单、回滚引擎 | ⏳ 待开始 | `core/sorter/transaction.py`<br/>`tests/test_transaction.py` |
+| **M2-UI** | 智能整理工坊桌面界面 | PyQt6 Fluent 控件、照片网格、去向卡片、大图预览、空状态与加载反馈；新建/编辑、删除确认及结果提示统一 Fluent 遮罩弹窗；系统目录选择器保留原生，分拣规则不变 | 🔄 Fluent 改造已实现，视觉待用户确认 | `app.py`, `ui/views/sorter_view.py`, `ui/views/preview_dialog.py`, `ui/views/workshop_dialogs.py`<br/>`tests/test_fluent_workshop.py`：启动、搜索/筛选、Qt 拖放、移出/编辑、真实模态弹窗确认/取消、两步编辑取消原子性、空白输入/回车/Esc、长文本滚动、预览缩放、异步失败与临时目录真实分拣；包含紧凑窗口与 150% Qt 缩放检查。验收不代表真实 AI 推理精度已重新验证 |
+| **M2-F3** | 存储操作模式 | 同磁盘优先 `os.link` 硬链接 (0空间占用)、跨磁盘流式复制、重名防灾 | ✅ 已完成 | `core/sorter/file_ops.py`<br/>`tests/test_file_ops.py` |
+| **M2-F4** | 事务审计与一键撤销 | 写入 `photoye_run_<timestamp>.undo.json` 事务清单、回滚引擎 | 🔄 进行中 | `core/sorter/transaction.py`<br/>`tests/test_transaction.py` |
 | **M2-F5** | 独立分包打包导出 | 整理产物按人物/分类分别压缩为独立 ZIP 文件 | ⏳ 待开始 | `core/sorter/exporter.py`<br/>`tests/test_exporter.py` |
 
 ---
 
-## 📝 当前模块开发说明 (M2-UI)
-- **目标**: 实现全新的独立桌面程序入口 `app.py` 及整理工坊主视图 `ui/views/sorter_view.py`。
-- **界面结构**:
-  - 顶部导航栏: 目录选择器 `[📂 选择相册文件夹]`、扫描进度条、AI 分析状态；
-  - 左侧面板: 多维快捷漏斗标签（全部/单人/合照/各人物/题材）+ 候选照片缩略图流式网格展示，支持单击选中；
-  - 右侧面板: 动态去向篮子列表（卡片式展现，直观显示每个篮子装入的照片与伴侣文件数量，提供一键加入操作）；
-- **验收标准**: 执行 `python app.py` 能够秒级弹出独立桌面 GUI 窗口，能浏览 `tests/test_images` 照片，点选漏斗与操作篮子顺畅无报错。
+## 📝 当前模块开发说明 (M2-F3)
+- **目标**: 实现 `core/sorter/file_ops.py`，构建 `FileOperationsExecutor` 物理文件安全落地执行器。
+- **输入**: `DispatchPlan`（分拣计划中的所有源文件到目标文件的分发动作）。
+- **计算与策略**:
+  1. **同卷秒级硬链接 (Hardlink)**: 默认优先调用 `os.link(src, dst)`，在同一磁盘分区实现 **0 额外磁盘占用、秒级物理整理**；
+  2. **跨分区/移动盘自适应降级 (Copy)**: 当源文件与目标输出目录位于不同磁盘驱动器（例如从 D 盘分拣到外部 U 盘 E 盘）时，捕获 `EXDEV / OSError` 自动平滑降级为流式复制 (`shutil.copy2`)，保持元数据完整；
+  3. **重名防灾安全追加 (No Overwrite)**: 严禁静默覆盖！若目标文件已存在且内容不同，自动追加序号递增（如 `IMG_001_1.JPG`、`IMG_001_1.MOV`，伴侣文件保持同步编号）；
+  4. **执行审计记录**: 记录每一步物理动作执行结果（`hardlink` 或 `copy`），为下一步 M2-F4 事务撤销回滚提供精确依据。
+- **验收标准**: 编写 `tests/test_file_ops.py`，验证同目录硬链接生成、跨目录复制、同名防灾递增以及伴侣文件同步编号 100% 成立。并在 UI 界面挂载 `[⚡ 执行物理分拣]` 按钮直观体验！
 
 
 ```sql
