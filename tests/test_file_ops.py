@@ -22,6 +22,8 @@ from core.sorter import (
     FileOperationsExecutor,
     SortingPipeline,
 )
+from core.sorter.pipeline import DispatchAction
+from core.sorter.transaction import undo_transaction
 
 
 @pytest.fixture
@@ -162,3 +164,199 @@ def test_fallback_copy_mode(mock_storage_env):
     # 复制文件的 inode 必定与原文件不同
     assert groups[0].main_photo_path.stat().st_ino != target_jpg.stat().st_ino
     print(f"\n[验证-复制降级] 复制落地成功，独立 Inode: {target_jpg.stat().st_ino}")
+
+
+def make_plan(env):
+    _, root, groups, labels = env
+    basket = DispatchBasket("alice", "Alice", "人物/Alice", rule=BasketFilterRule(person_names=["Alice"]))
+    return SortingPipeline(root).plan_dispatch(groups, labels, [basket])
+
+
+@pytest.mark.parametrize("hardlink", [True, False])
+def test_companion_collision_reserves_whole_group(mock_storage_env, hardlink):
+    plan = make_plan(mock_storage_env)
+    old = plan.actions[0].target_path.with_name("IMG_001_1.MOV")
+    old.write_bytes(b"existing companion")
+    report = FileOperationsExecutor(hardlink).execute_plan(plan)
+    assert report.failed_count == 0 and report.successful_count == 2
+    assert {r.target_path.stem for r in report.results} == {"IMG_001_2"}
+    assert old.read_bytes() == b"existing companion"
+    assert report.manifest_path.exists()
+    assert undo_transaction(report.manifest_path).removed_count == 2
+    assert old.read_bytes() == b"existing companion"
+
+
+def test_missing_companion_leaves_no_partial_group(mock_storage_env):
+    plan = make_plan(mock_storage_env)
+    plan.actions[1].source_path.unlink()
+    report = FileOperationsExecutor().execute_plan(plan)
+    assert report.failed_count == 2 and report.successful_count == 0
+    assert not plan.actions[0].target_path.with_stem("IMG_001_1").exists()
+    assert all("源文件不存在" in r.error_message for r in report.results)
+
+
+def test_second_create_failure_rolls_back_only_new_files(mock_storage_env, monkeypatch):
+    plan = make_plan(mock_storage_env)
+    executor = FileOperationsExecutor(False)
+    create = executor._create_file
+
+    def fail_companion(src, dst):
+        if src.suffix == ".MOV":
+            raise PermissionError("companion denied")
+        return create(src, dst)
+
+    monkeypatch.setattr(executor, "_create_file", fail_companion)
+    report = executor.execute_plan(plan)
+    assert report.failed_count == 2 and report.successful_count == 0
+    assert not plan.actions[0].target_path.with_stem("IMG_001_1").exists()
+    assert plan.actions[0].target_path.read_bytes() == b"pre_existing_different_content_999"
+    assert undo_transaction(report.manifest_path).completed
+
+
+def test_exclusive_copy_does_not_overwrite_racing_file(mock_storage_env, monkeypatch):
+    plan = make_plan(mock_storage_env)
+    executor = FileOperationsExecutor(False)
+    create = executor._create_file
+    raced = []
+
+    def race(src, dst):
+        dst.write_bytes(b"another application")
+        raced.append(dst)
+        return create(src, dst)
+
+    monkeypatch.setattr(executor, "_create_file", race)
+    report = executor.execute_plan(plan)
+    assert report.failed_count == 2
+    assert raced[0].read_bytes() == b"another application"
+
+
+def test_cross_volume_link_failure_falls_back_to_copy(mock_storage_env, monkeypatch):
+    import errno
+    monkeypatch.setattr(os, "link", lambda *args: (_ for _ in ()).throw(OSError(errno.EXDEV, "cross-device")))
+    report = FileOperationsExecutor().execute_plan(make_plan(mock_storage_env))
+    assert report.copy_count == 2 and report.failed_count == 0
+
+
+@pytest.mark.parametrize("subfolder", ["../escaped", "a/../../escaped", "C:/escaped", "/escaped", "\\\\server\\share", "D:relative"])
+def test_pipeline_rejects_escaping_paths(mock_storage_env, subfolder):
+    _, root, groups, labels = mock_storage_env
+    basket = DispatchBasket("escape", "escape", subfolder, rule=BasketFilterRule())
+    with pytest.raises(ValueError):
+        SortingPipeline(root).plan_dispatch(groups, labels, [basket])
+
+
+def test_executor_rejects_forged_outside_plan(mock_storage_env):
+    src, root, groups, _ = mock_storage_env
+    outside = src.parent / "escaped.JPG"
+    report = FileOperationsExecutor().execute_plan(DispatchPlan(root, actions=[DispatchAction(groups[0].main_photo_path, outside, "escape")]))
+    assert report.failed_count == 1 and report.manifest_path is None
+    assert not outside.exists() and groups[0].main_photo_path.exists()
+
+
+def test_mkdir_failure_is_reported(mock_storage_env, monkeypatch):
+    from pathlib import Path
+    plan = make_plan(mock_storage_env)
+    mkdir = Path.mkdir
+
+    def deny(path, *args, **kwargs):
+        if path == plan.output_root:
+            raise PermissionError("output denied")
+        return mkdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", deny)
+    report = FileOperationsExecutor().execute_plan(plan)
+    assert report.failed_count == 2 and "output denied" in report.errors[0]
+
+
+def test_journal_record_failure_rolls_back_and_stops(mock_storage_env, monkeypatch):
+    from core.sorter.transaction import TransactionJournal
+    plan = make_plan(mock_storage_env)
+    monkeypatch.setattr(TransactionJournal, "record_created", lambda *args: (_ for _ in ()).throw(OSError("audit full")))
+    report = FileOperationsExecutor().execute_plan(plan)
+    assert report.failed_count == 2 and report.errors
+    assert not plan.actions[0].target_path.with_stem("IMG_001_1").exists()
+
+
+def test_directory_audit_failure_cleans_new_empty_directories(mock_storage_env, monkeypatch):
+    from core.sorter.transaction import TransactionJournal
+    plan = make_plan(mock_storage_env)
+    for action in plan.actions:
+        action.target_path = plan.output_root / "new" / "nested" / action.target_path.name
+    monkeypatch.setattr(TransactionJournal, "record_directories", lambda *args: (_ for _ in ()).throw(OSError("directory audit full")))
+    report = FileOperationsExecutor().execute_plan(plan)
+    assert report.failed_count == 2 and report.errors
+    assert not (plan.output_root / "new").exists()
+    assert undo_transaction(report.manifest_path).completed
+
+
+def test_audit_failure_counts_unexecuted_same_source_distinct_targets(mock_storage_env, monkeypatch):
+    from core.sorter.transaction import TransactionJournal
+    plan = make_plan(mock_storage_env)
+    source = plan.actions[0].source_path
+    plan.actions = [DispatchAction(source, plan.output_root / name, "b") for name in ("one.jpg", "two.jpg")]
+    monkeypatch.setattr(TransactionJournal, "record_created", lambda *args: (_ for _ in ()).throw(OSError("audit full")))
+    report = FileOperationsExecutor().execute_plan(plan)
+    assert report.total_actions == report.failed_count == len(report.results) == 2
+    assert report.successful_count == 0 and "未执行" in report.results[1].error_message
+    assert not (plan.output_root / "one.jpg").exists() and not (plan.output_root / "two.jpg").exists()
+
+
+def test_rollback_keeps_externally_changed_new_file(mock_storage_env, monkeypatch):
+    plan = make_plan(mock_storage_env)
+    executor = FileOperationsExecutor(False)
+    create = executor._create_file
+    created = []
+
+    def edit_then_fail(source, target):
+        if created:
+            created[0].write_bytes(b"external edit")
+            raise PermissionError("companion failure")
+        result = create(source, target)
+        created.append(target)
+        return result
+
+    monkeypatch.setattr(executor, "_create_file", edit_then_fail)
+    report = executor.execute_plan(plan)
+    assert report.failed_count == 2 and "回退失败" in report.results[0].error_message
+    assert created[0].read_bytes() == b"external edit"
+    assert not undo_transaction(report.manifest_path).completed
+
+
+def test_date_naming_groups_use_distinct_sources(mock_storage_env):
+    src, root, groups, labels = mock_storage_env
+    other = src / "OTHER.JPG"
+    other.write_bytes(b"other photo")
+    groups.append(PhotoAssetGroup(other, other.stat().st_size, groups[0].created_at))
+    basket = DispatchBasket("dates", "dates", "dates", rule=BasketFilterRule(), naming_pattern="date")
+    plan = SortingPipeline(root).plan_dispatch(groups, labels, [basket])
+    report = FileOperationsExecutor().execute_plan(plan)
+    assert report.successful_count == 3 and report.failed_count == 0
+    main_targets = [r.target_path for r in report.results if not r.is_companion]
+    assert len(set(main_targets)) == 2
+    assert {p.read_bytes() for p in main_targets} == {groups[0].main_photo_path.read_bytes(), b"other photo"}
+
+
+def test_failed_group_does_not_block_later_group_with_same_date(mock_storage_env, monkeypatch):
+    src, root, groups, labels = mock_storage_env
+    other = src / "OTHER.JPG"
+    other.write_bytes(b"second photo")
+    groups.append(PhotoAssetGroup(other, other.stat().st_size, groups[0].created_at))
+    basket = DispatchBasket("dates", "dates", "new/date", rule=BasketFilterRule(), naming_pattern="date")
+    plan = SortingPipeline(root).plan_dispatch(groups, labels, [basket])
+    executor = FileOperationsExecutor(False)
+    create = executor._create_file
+
+    def fail_video(source, target):
+        if source.suffix == ".MOV":
+            raise PermissionError("video locked")
+        return create(source, target)
+
+    monkeypatch.setattr(executor, "_create_file", fail_video)
+    report = executor.execute_plan(plan)
+    assert report.failed_count == 2 and report.successful_count == 1 and not report.errors
+    success = next(r for r in report.results if r.success)
+    assert success.target_path.read_bytes() == b"second photo"
+    assert success.target_path.stem.endswith("_1")
+    undo = undo_transaction(report.manifest_path)
+    assert undo.completed and undo.removed_count == 1 and undo.missing_count == 1
+    assert not (root / "new").exists()

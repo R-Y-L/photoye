@@ -65,6 +65,11 @@ class PhotoyeApplication(FluentWindow):
             self.move(x, y)
 
     def closeEvent(self, event) -> None:
+        file_thread = self.sorter_view.file_task_thread
+        if file_thread is not None and file_thread.isRunning():
+            self.sorter_view.lbl_status.setText("正在处理分拣文件，请等待任务结束后关闭窗口。")
+            event.ignore()
+            return
         thread = self.sorter_view.scan_thread
         if thread is not None and thread.isRunning():
             self.sorter_view.lbl_status.setText("正在分析照片，请等待当前任务结束后关闭窗口。")

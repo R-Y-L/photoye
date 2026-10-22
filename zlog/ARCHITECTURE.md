@@ -152,22 +152,43 @@ CREATE TABLE IF NOT EXISTS backup_ledger (
 分拣过程生成唯一事务编号，并在目标目录写入 `photoye_run_<timestamp>.undo.json`：
 ```json
 {
-  "run_id": "20260928_120000",
-  "created_at": "2026-09-28T12:00:00",
-  "mode": "hardlink",
+  "schema_version": 1,
+  "run_id": "20261019_120000_000000_<uuid>",
+  "created_at": "2026-10-19T12:00:00+00:00",
+  "output_root": "D:/Output",
+  "mode": "mixed",
+  "status": "completed",
   "operations": [
     {
       "source": "D:/Photos/IMG_01.JPG",
       "target": "D:/Output/YouYu/IMG_01.JPG",
-      "type": "hardlink"
+      "type": "hardlink",
+      "is_companion": false,
+      "fingerprint": {
+        "st_dev": 1, "st_ino": 123, "size": 1024,
+        "mtime_ns": 1792411200000000000,
+        "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+      }
     },
     {
       "source": "D:/Photos/IMG_01.MOV",
       "target": "D:/Output/YouYu/IMG_01.MOV",
-      "type": "hardlink",
-      "is_companion": true
+      "type": "copy",
+      "is_companion": true,
+      "fingerprint": {
+        "st_dev": 1, "st_ino": 124, "size": 2048,
+        "mtime_ns": 1792411200000000000,
+        "sha256": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+      }
     }
+  ],
+  "created_directories": [
+    {"path": "D:/Output/YouYu", "st_dev": 1, "st_ino": 122}
   ]
 }
 ```
-撤销引擎根据操作清单反向解除链接或删除目标文件，若目标文件在分拣后已被外部程序修改则强制告警并停止删除。
+清单由 `core/sorter/transaction.py` 通过同目录临时文件和原子替换持久化；`mode` 为 `pending`、`hardlink`、`copy` 或 `mixed`，状态为 `in_progress`、`completed`、`partial_failure`。旧版 `undone` 清单仍可读取并清理。以上路径及指纹仅为结构示例。
+
+撤销前对全部现存目标先校验输出根边界、路径重解析点、文件身份、大小、修改时间和分块 SHA-256，任一目标变化时整批停止。校验通过后反序移除本批目标，只清理登记且身份不变的空目录；保留源文件和既有文件，缺失目标安全跳过。文件及目录处理全部成功后，再核对清单自身指纹并删除对应 JSON；任一步失败则保留清单供重试，不能将清单删除失败报告为撤销完成。主照片完整路径通过 `DispatchAction.asset_id` 标识伴侣原子组，防灾序号按整组文件共同预留。
+
+该协议覆盖正常执行及可捕获错误，不是文件系统跨文件崩溃事务：文件创建与日志写入之间若遭断电/强杀，可能遗留未登记产物。清单需作为受信本地文件保存，撤销期间不应由其他程序修改输出树；硬链接与源文件共享内容，任一路径修改都会触发撤销保护。

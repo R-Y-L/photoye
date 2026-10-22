@@ -77,6 +77,18 @@ def active_cards(view):
     ]
 
 
+def wait_file_task(view, qapp):
+    thread = view.file_task_thread
+    assert thread is not None
+    if thread.isRunning():
+        finished = QSignalSpy(thread.finished)
+        assert finished.wait(5000)
+    qapp.processEvents()
+    assert thread.wait(5000)
+    assert view.btn_select_dir.isEnabled()
+    assert not view.progress_bar.isVisible()
+
+
 @pytest.fixture
 def modal_driver(monkeypatch):
     """定时操作真实模态窗口，保留 exec、验证和淡出关闭路径。"""
@@ -556,7 +568,7 @@ def test_active_worker_prevents_unsafe_close(qapp):
         window.close()
 
 
-def test_dispatch_button_writes_real_files(view, album, tmp_path, monkeypatch, modal_driver):
+def test_dispatch_button_writes_real_files(view, album, tmp_path, monkeypatch, modal_driver, qapp):
     view._on_analysis_finished(*album)
     output = tmp_path / "output"
     output.mkdir()
@@ -574,6 +586,7 @@ def test_dispatch_button_writes_real_files(view, album, tmp_path, monkeypatch, m
     opened = []
     monkeypatch.setattr(sorter_view.QDesktopServices, "openUrl", lambda url: opened.append(url) or True)
     QTest.mouseClick(view.btn_execute_dispatch, Qt.MouseButton.LeftButton)
+    wait_file_task(view, qapp)
     for group in album[0]:
         scene = album[1][group.main_photo_path.name].scene_tags[0]
         target_dir = output / "题材" / scene
@@ -582,6 +595,7 @@ def test_dispatch_button_writes_real_files(view, album, tmp_path, monkeypatch, m
             assert (target_dir / companion.filepath.name).read_bytes() == companion.filepath.read_bytes()
     assert len(messages) == 1 and "失败数: 0" in messages[0]
     assert len(opened) == 1 and Path(opened[0].toLocalFile()) == output.resolve()
+    assert view.last_manifest_path.is_file() and view.btn_undo_dispatch.isEnabled()
 
 
 def test_edit_add_delete_baskets_leave_source_files(view, album, modal_driver, qapp):
@@ -622,8 +636,8 @@ def test_edit_add_delete_baskets_leave_source_files(view, album, modal_driver, q
     assert album[0][0].companions[0].filepath.exists()
 
 
-def test_dispatch_cancel_and_partial_failure_are_truthful(view, album, tmp_path, monkeypatch, modal_driver):
-    from core.sorter.file_ops import FileOperationsExecutor
+def test_dispatch_cancel_and_partial_failure_are_truthful(view, album, tmp_path, monkeypatch, modal_driver, qapp):
+    from core.sorter.file_ops import ExecutionReport, FileOpResult, FileOperationsExecutor
 
     view._on_analysis_finished(*album)
     execute = Mock()
@@ -632,7 +646,10 @@ def test_dispatch_cancel_and_partial_failure_are_truthful(view, album, tmp_path,
     QTest.mouseClick(view.btn_execute_dispatch, Qt.MouseButton.LeftButton)
     execute.assert_not_called()
     monkeypatch.setattr(sorter_view.QFileDialog, "getExistingDirectory", lambda *args: str(tmp_path))
-    execute.return_value = Mock(total_actions=3, successful_count=2, failed_count=1, hardlink_count=2, copy_count=0)
+    execute.return_value = ExecutionReport(
+        output_root=tmp_path, total_actions=3, successful_count=2, failed_count=1, hardlink_count=2,
+        results=[FileOpResult(album[0][0].main_photo_path, tmp_path / "lake.jpg", "copy", False, False, "access denied")],
+    )
     messages = []
 
     def confirm_failure(dialog):
@@ -640,13 +657,219 @@ def test_dispatch_cancel_and_partial_failure_are_truthful(view, album, tmp_path,
         messages.append(dialog.content_label.text())
         assert "部分文件分拣失败" in messages[-1]
         assert "失败数: 1" in messages[-1]
+        assert "lake.jpg：access denied" in messages[-1]
         QTest.mouseClick(dialog.yesButton, Qt.MouseButton.LeftButton)
 
     modal_driver.append(confirm_failure)
     monkeypatch.setattr(sorter_view.QDesktopServices, "openUrl", lambda *args: False)
     QTest.mouseClick(view.btn_execute_dispatch, Qt.MouseButton.LeftButton)
+    wait_file_task(view, qapp)
     assert len(messages) == 1
     assert "无法打开文件管理器" in view.lbl_status.text()
+
+
+def test_dispatch_and_confirmed_undo_use_real_thread_and_dialogs(view, album, tmp_path, monkeypatch, modal_driver, qapp):
+    view._on_analysis_finished(*album)
+    output = tmp_path / "output"
+    output.mkdir()
+    old = output / "old.jpg"
+    old.write_bytes(b"old file")
+    before = {g.main_photo_path: g.main_photo_path.read_bytes() for g in album[0]}
+    monkeypatch.setattr(sorter_view.QFileDialog, "getExistingDirectory", lambda *args: str(output))
+    monkeypatch.setattr(sorter_view.QDesktopServices, "openUrl", lambda *args: True)
+    modal_driver.append(lambda d: QTest.mouseClick(d.yesButton, Qt.MouseButton.LeftButton))
+    QTest.mouseClick(view.btn_execute_dispatch, Qt.MouseButton.LeftButton)
+    assert not view.btn_execute_dispatch.isEnabled()
+    assert not view.btn_select_dir.isEnabled() and not view.basket_cards_container.isEnabled()
+    wait_file_task(view, qapp)
+    manifest = view.last_manifest_path
+    assert manifest.is_file()
+    targets = [Path(op["target"]) for op in json.loads(manifest.read_text(encoding="utf-8"))["operations"]]
+    assert len(targets) == 3 and all(p.exists() for p in targets)
+
+    def confirm(dialog):
+        assert dialog.yesButton.text() == "确认撤销"
+        assert "源照片和已有文件不动" in dialog.content_label.text()
+        assert "全部撤销成功后会删除本次清单" in dialog.content_label.text()
+        QTest.mouseClick(dialog.yesButton, Qt.MouseButton.LeftButton)
+
+    def result(dialog):
+        assert dialog.title_label.text() == "撤销完成"
+        assert "已移除：3 个" in dialog.content_label.text()
+        assert "撤销清单已清理" in dialog.content_label.text()
+        assert view.last_manifest_path is None and not view.btn_undo_dispatch.isEnabled()
+        QTest.mouseClick(dialog.yesButton, Qt.MouseButton.LeftButton)
+
+    modal_driver.extend([confirm, result])
+    QTest.mouseClick(view.btn_undo_dispatch, Qt.MouseButton.LeftButton)
+    wait_file_task(view, qapp)
+    assert all(not p.exists() for p in targets)
+    assert all(p.read_bytes() == content for p, content in before.items())
+    assert album[0][0].companions[0].filepath.read_bytes() == b"sidecar"
+    assert old.read_bytes() == b"old file" and not manifest.exists()
+    assert view.last_manifest_path is None and not view.btn_undo_dispatch.isEnabled()
+    assert view.btn_undo_dispatch.toolTip() == ""
+    assert view.basket_cards_container.isEnabled()
+
+
+def test_historical_manifest_cancel_and_modified_target_stop(view, album, tmp_path, monkeypatch, modal_driver, qapp):
+    from core.sorter.file_ops import FileOperationsExecutor
+    view._on_analysis_finished(*album)
+    plan = SortingPipeline(tmp_path / "output").plan_dispatch(album[0], album[1], view.baskets)
+    report = FileOperationsExecutor(False).execute_plan(plan)
+    assert not report.failed_count
+    manifest = report.manifest_path
+    view.last_manifest_path = manifest
+    view.btn_undo_dispatch.setEnabled(True)
+    monkeypatch.setattr(sorter_view.QFileDialog, "getOpenFileName", lambda *args: (str(manifest), ""))
+    modal_driver.append(lambda d: QTest.mouseClick(d.cancelButton, Qt.MouseButton.LeftButton))
+    QTest.mouseClick(view.btn_open_undo, Qt.MouseButton.LeftButton)
+    assert view.file_task_thread is None and all(r.target_path.exists() for r in report.results)
+    report.results[0].target_path.write_bytes(b"edited")
+
+    def stopped(dialog):
+        assert dialog.title_label.text() == "撤销已停止"
+        assert "修改或替换" in dialog.content_label.text()
+        assert "清单保留以便重试" in dialog.content_label.text()
+        QTest.mouseClick(dialog.yesButton, Qt.MouseButton.LeftButton)
+
+    modal_driver.extend([lambda d: QTest.mouseClick(d.yesButton, Qt.MouseButton.LeftButton), stopped])
+    QTest.mouseClick(view.btn_open_undo, Qt.MouseButton.LeftButton)
+    wait_file_task(view, qapp)
+    assert all(r.target_path.exists() for r in report.results)
+    assert manifest.exists() and view.last_manifest_path == manifest
+    assert view.btn_undo_dispatch.isEnabled()
+
+
+@pytest.mark.parametrize("same_as_last", [False, True])
+def test_historical_undo_cleans_only_selected_manifest(view, album, tmp_path, monkeypatch, modal_driver, qapp, same_as_last):
+    from core.sorter.file_ops import FileOperationsExecutor
+    view._on_analysis_finished(*album)
+    plan = SortingPipeline(tmp_path / "output").plan_dispatch(album[0], album[1], view.baskets)
+    selected = FileOperationsExecutor(False).execute_plan(plan)
+    assert selected.failed_count == 0
+    latest = selected if same_as_last else FileOperationsExecutor(False).execute_plan(plan)
+    assert latest.failed_count == 0
+    view.last_manifest_path = latest.manifest_path
+    view.btn_undo_dispatch.setEnabled(True)
+    view.btn_undo_dispatch.setToolTip(str(latest.manifest_path))
+    monkeypatch.setattr(sorter_view.QFileDialog, "getOpenFileName", lambda *args: (str(selected.manifest_path), ""))
+    modal_driver.extend([
+        lambda d: QTest.mouseClick(d.yesButton, Qt.MouseButton.LeftButton),
+        lambda d: QTest.mouseClick(d.yesButton, Qt.MouseButton.LeftButton),
+    ])
+    QTest.mouseClick(view.btn_open_undo, Qt.MouseButton.LeftButton)
+    wait_file_task(view, qapp)
+    assert not selected.manifest_path.exists()
+    assert all(not r.target_path.exists() for r in selected.results)
+    if same_as_last:
+        assert view.last_manifest_path is None and not view.btn_undo_dispatch.isEnabled()
+    else:
+        assert latest.manifest_path.is_file() and all(r.target_path.exists() for r in latest.results)
+        assert view.last_manifest_path == latest.manifest_path and view.btn_undo_dispatch.isEnabled()
+        assert view.btn_undo_dispatch.toolTip() == str(latest.manifest_path)
+
+
+def test_manifest_cleanup_failure_keeps_retry_button(view, album, tmp_path, monkeypatch, modal_driver, qapp):
+    from core.sorter.file_ops import FileOperationsExecutor
+    view._on_analysis_finished(*album)
+    plan = SortingPipeline(tmp_path / "output").plan_dispatch(album[0], album[1], view.baskets)
+    executed = FileOperationsExecutor(False).execute_plan(plan)
+    assert executed.failed_count == 0
+    manifest = executed.manifest_path
+    view.last_manifest_path = manifest
+    view.btn_undo_dispatch.setEnabled(True)
+    unlink = Path.unlink
+
+    def locked(path, *args, **kwargs):
+        if path == manifest:
+            raise PermissionError("manifest locked")
+        return unlink(path, *args, **kwargs)
+
+    def stopped(dialog):
+        assert dialog.title_label.text() == "撤销已停止"
+        assert "撤销清单清理失败" in dialog.content_label.text()
+        assert "清单保留以便重试" in dialog.content_label.text()
+        QTest.mouseClick(dialog.yesButton, Qt.MouseButton.LeftButton)
+
+    modal_driver.extend([lambda d: QTest.mouseClick(d.yesButton, Qt.MouseButton.LeftButton), stopped])
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "unlink", locked)
+        QTest.mouseClick(view.btn_undo_dispatch, Qt.MouseButton.LeftButton)
+        wait_file_task(view, qapp)
+    assert manifest.exists() and all(not r.target_path.exists() for r in executed.results)
+    assert view.last_manifest_path == manifest and view.btn_undo_dispatch.isEnabled()
+    modal_driver.extend([
+        lambda d: QTest.mouseClick(d.yesButton, Qt.MouseButton.LeftButton),
+        lambda d: QTest.mouseClick(d.yesButton, Qt.MouseButton.LeftButton),
+    ])
+    QTest.mouseClick(view.btn_undo_dispatch, Qt.MouseButton.LeftButton)
+    wait_file_task(view, qapp)
+    assert not manifest.exists() and view.last_manifest_path is None
+    assert not view.btn_undo_dispatch.isEnabled()
+
+
+def test_file_task_failure_restores_controls(view, album, modal_driver, qapp):
+    view._on_analysis_finished(*album)
+
+    def fail():
+        raise OSError("output unavailable")
+
+    def acknowledge(dialog):
+        assert dialog.title_label.text() == "文件任务未完成"
+        assert "output unavailable" in dialog.content_label.text()
+        QTest.mouseClick(dialog.yesButton, Qt.MouseButton.LeftButton)
+
+    modal_driver.append(acknowledge)
+    view._start_file_task(fail, lambda report: pytest.fail("unexpected result"), "working")
+    wait_file_task(view, qapp)
+    assert view.btn_execute_dispatch.isEnabled() and view.basket_cards_container.isEnabled()
+
+
+def test_file_task_prevents_close_and_keeps_event_loop_responsive(qapp):
+    import threading
+    window = PhotoyeApplication()
+    started, release = threading.Event(), threading.Event()
+
+    def task():
+        started.set()
+        assert release.wait(5)
+        return None
+
+    try:
+        window.show()
+        window.sorter_view._start_file_task(task, lambda report: None, "working")
+        assert started.wait(2)
+        assert not window.close() and window.isVisible()
+        assert "等待任务结束" in window.sorter_view.lbl_status.text()
+        events = []
+        QTimer.singleShot(0, lambda: events.append("responsive"))
+        qapp.processEvents()
+        assert events == ["responsive"]
+    finally:
+        release.set()
+        wait_file_task(window.sorter_view, qapp)
+        assert window.close()
+
+
+def test_edit_invalid_output_path_is_atomic(view, album, modal_driver):
+    view._on_analysis_finished(*album)
+    basket = view.baskets[0]
+    original = (basket.name, basket.output_subfolder)
+
+    def enter(value):
+        def apply(dialog):
+            dialog.text_edit.setText(value)
+            QTest.mouseClick(dialog.yesButton, Qt.MouseButton.LeftButton)
+        return apply
+
+    def invalid(dialog):
+        assert dialog.title_label.text() == "输出目录无效"
+        QTest.mouseClick(dialog.yesButton, Qt.MouseButton.LeftButton)
+
+    modal_driver.extend([enter("unsaved"), enter("../escape"), invalid])
+    view._on_basket_rename_requested(basket)
+    assert (basket.name, basket.output_subfolder) == original
 
 
 @pytest.mark.parametrize("cancel_at", [0, 1])

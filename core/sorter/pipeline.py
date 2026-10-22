@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import datetime
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Dict, List, Optional, Set, Tuple, Union
 
 from core.ai.scene_classifier import PhotoMultiLabel
@@ -52,6 +52,7 @@ class DispatchAction:
     is_companion: bool = False                                 # 是否为伴侣文件
     companion_type: Optional[str] = None                       # 伴侣类型
     reason: str = "auto_rule"                                  # 加入原因: "auto_rule" 或 "manual_drag"
+    asset_id: Optional[str] = None                             # 主照片完整路径，标识伴侣原子事务
 
 
 @dataclass
@@ -68,6 +69,17 @@ class SortingPipeline:
 
     def __init__(self, output_root: Union[str, Path]) -> None:
         self.output_root = Path(output_root).resolve()
+
+    def resolve_output_folder(self, subfolder: str) -> Path:
+        """在输入边界拒绝绝对路径、上级跳转及链接到输出根目录外的路径。"""
+        path = Path(subfolder)
+        windows_path = PureWindowsPath(subfolder)
+        if not subfolder.strip() or path.is_absolute() or windows_path.drive or windows_path.root or ".." in windows_path.parts:
+            raise ValueError("输出子目录必须是根目录内的相对路径，不允许 .. 或绝对路径")
+        target = (self.output_root / path).resolve()
+        if not target.is_relative_to(self.output_root):
+            raise ValueError("输出子目录不能越过所选根目录")
+        return target
 
     @staticmethod
     def _is_asset_match_rule(
@@ -186,7 +198,7 @@ class SortingPipeline:
         counts: Dict[str, int] = {b.basket_id: 0 for b in baskets}
 
         for basket in baskets:
-            target_folder = self.output_root / basket.output_subfolder
+            target_folder = self.resolve_output_folder(basket.output_subfolder)
             handled_stems_for_basket: Set[str] = set()
             seq_counter = 1
 
@@ -215,6 +227,8 @@ class SortingPipeline:
                         custom_prefix=basket.custom_prefix,
                         seq_idx=seq_counter,
                     )
+                    if Path(target_main_name).name != target_main_name or PureWindowsPath(target_main_name).name != target_main_name:
+                        raise ValueError("照片命名前缀不能包含目录路径")
 
                     # 1. 主照片动作
                     actions.append(
@@ -224,6 +238,7 @@ class SortingPipeline:
                             basket_id=basket.basket_id,
                             is_companion=False,
                             reason=reason_desc,
+                            asset_id=str(group.main_photo_path.resolve()),
                         )
                     )
 
@@ -239,6 +254,7 @@ class SortingPipeline:
                                 is_companion=True,
                                 companion_type=comp.file_type,
                                 reason=reason_desc,
+                                asset_id=str(group.main_photo_path.resolve()),
                             )
                         )
 

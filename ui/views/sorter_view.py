@@ -54,6 +54,7 @@ from core.ai.scene_classifier import PhotoMultiLabel, SceneClassifier
 from core.ai.semantic_search import SemanticSearchEngine
 from core.metadata.companion_scanner import CompanionScanner, PhotoAssetGroup
 from core.sorter.pipeline import DispatchBasket, DispatchPlan, SortingPipeline
+from core.sorter.transaction import undo_transaction
 from data.database import create_person, get_connection, init_db
 from ui.views.workshop_dialogs import BasketTextDialog, WorkshopMessageDialog
 
@@ -332,6 +333,22 @@ class ScanAndAnalysisThread(QThread):
         self.completed_signal.emit(asset_groups, labels_map, matrix)
 
 
+class FileTaskThread(QThread):
+    """文件写入、指纹校验与撤销不占用界面线程。"""
+
+    def __init__(self, operation) -> None:
+        super().__init__()
+        self.operation = operation
+        self.result = None
+        self.error = None
+
+    def run(self) -> None:
+        try:
+            self.result = self.operation()
+        except Exception as exc:
+            self.error = str(exc)
+
+
 class SorterWorkshopView(QWidget):
     """整理工坊主交互面板 (完善版)"""
 
@@ -347,6 +364,8 @@ class SorterWorkshopView(QWidget):
 
         self.search_engine: Optional[SemanticSearchEngine] = None
         self.scan_thread: Optional[ScanAndAnalysisThread] = None
+        self.file_task_thread: Optional[FileTaskThread] = None
+        self.last_manifest_path: Optional[Path] = None
         self._init_ui()
 
     def _init_ui(self) -> None:
@@ -492,6 +511,15 @@ class SorterWorkshopView(QWidget):
         self.btn_execute_dispatch.setEnabled(False)
         self.btn_execute_dispatch.clicked.connect(self._on_execute_physical_dispatch)
         dispatch_layout.addWidget(self.btn_execute_dispatch)
+        undo_row = QHBoxLayout()
+        self.btn_undo_dispatch = PushButton(FluentIcon.CANCEL, "撤销上次分拣", self)
+        self.btn_undo_dispatch.setEnabled(False)
+        self.btn_undo_dispatch.clicked.connect(self._on_undo_dispatch)
+        undo_row.addWidget(self.btn_undo_dispatch)
+        self.btn_open_undo = TransparentPushButton("选择撤销清单", self)
+        self.btn_open_undo.clicked.connect(self._on_open_undo_manifest)
+        undo_row.addWidget(self.btn_open_undo)
+        dispatch_layout.addLayout(undo_row)
         right_layout.addWidget(self.dispatch_card)
 
         self.splitter.addWidget(right_widget)
@@ -525,8 +553,10 @@ class SorterWorkshopView(QWidget):
         dialog.deleteLater()
         return value, accepted
 
-    def _show_message(self, title: str, content: str, confirm: bool = False) -> bool:
+    def _show_message(self, title: str, content: str, confirm: bool = False, confirm_text: str = "删除篮子") -> bool:
         dialog = WorkshopMessageDialog(title, content, self.window(), confirm)
+        if confirm:
+            dialog.yesButton.setText(confirm_text)
         accepted = bool(dialog.exec())
         dialog.deleteLater()
         return accepted
@@ -563,6 +593,8 @@ class SorterWorkshopView(QWidget):
         self.btn_select_dir.setEnabled(not loading)
         self.btn_load_test_images.setEnabled(not loading)
         self.btn_add_custom_basket.setEnabled(not loading)
+        self.btn_open_undo.setEnabled(not loading)
+        self.btn_undo_dispatch.setEnabled(not loading and self.last_manifest_path is not None)
         self.txt_semantic_search.setEnabled(not loading and self.image_matrix is not None)
         self.btn_clear_search.setEnabled(not loading and bool(self.asset_groups))
         for button in self.filter_buttons.values():
@@ -690,7 +722,8 @@ class SorterWorkshopView(QWidget):
 
         pipeline = SortingPipeline(output_root=Path("./output_sorted"))
         plan: DispatchPlan = pipeline.plan_dispatch(self.asset_groups, self.labels_map, self.baskets)
-        self.btn_execute_dispatch.setEnabled(bool(plan.actions))
+        busy = self.file_task_thread is not None and self.file_task_thread.isRunning()
+        self.btn_execute_dispatch.setEnabled(bool(plan.actions) and not busy)
         self.lbl_dispatch_summary.setText(f"{len(self.baskets)} 个篮子 · {len(plan.actions)} 个待分发文件" if plan.actions else "尚无待分发文件")
         if not self.baskets:
             empty_card = CardWidget(self.basket_cards_container)
@@ -761,6 +794,11 @@ class SorterWorkshopView(QWidget):
         if not ok2 or not new_folder.strip():
             return
 
+        try:
+            SortingPipeline(Path("./output_sorted")).resolve_output_folder(new_folder.strip())
+        except ValueError as exc:
+            self._show_message("输出目录无效", str(exc))
+            return
         basket.name = new_name.strip()
         basket.output_subfolder = new_folder.strip()
         self._render_basket_cards()
@@ -777,6 +815,11 @@ class SorterWorkshopView(QWidget):
         name, ok = self._prompt_text("新建去向篮子", "请输入篮子名称，例如：5月20日活动相册")
         if ok and name.strip():
             clean_name = name.strip()
+            try:
+                SortingPipeline(Path("./output_sorted")).resolve_output_folder(f"自定义/{clean_name}")
+            except ValueError as exc:
+                self._show_message("输出目录无效", str(exc))
+                return
             new_basket = DispatchBasket(
                 basket_id=f"custom_{clean_name}",
                 name=clean_name,
@@ -802,17 +845,52 @@ class SorterWorkshopView(QWidget):
         from core.sorter.file_ops import FileOperationsExecutor
         out_root = Path(out_folder)
         pipeline = SortingPipeline(output_root=out_root)
-        plan: DispatchPlan = pipeline.plan_dispatch(self.asset_groups, self.labels_map, self.baskets)
+        try:
+            plan: DispatchPlan = pipeline.plan_dispatch(self.asset_groups, self.labels_map, self.baskets)
+        except ValueError as exc:
+            self._show_message("分拣配置无效", str(exc))
+            return
 
         if not plan.actions:
             self._show_message("没有待分发文件", "当前各篮子中没有待分发的文件。")
             return
 
         executor = FileOperationsExecutor(prefer_hardlink=True)
-        report = executor.execute_plan(plan)
+        self._start_file_task(lambda: executor.execute_plan(plan), self._on_dispatch_finished, "正在分拣并写入撤销清单，请勿修改输出文件…")
+
+    def _start_file_task(self, operation, completed, status: str) -> None:
+        if self.file_task_thread is not None and self.file_task_thread.isRunning():
+            return
+        self._set_loading(True)
+        self.basket_cards_container.setEnabled(False)
+        self.btn_open_undo.setEnabled(False)
+        self.btn_undo_dispatch.setEnabled(False)
+        self.lbl_status.setText(status)
+        thread = FileTaskThread(operation)
+        self.file_task_thread = thread
+        thread.finished.connect(lambda: self._finish_file_task(thread, completed))
+        thread.start()
+
+    def _finish_file_task(self, thread: FileTaskThread, completed) -> None:
+        self._set_loading(False)
+        self.basket_cards_container.setEnabled(True)
+        self._render_basket_cards()
+        if thread.error is not None:
+            self.lbl_status.setText(f"文件任务未完成：{thread.error}")
+            self._show_message("文件任务未完成", thread.error)
+            return
+        completed(thread.result)
+        self.btn_undo_dispatch.setEnabled(self.last_manifest_path is not None)
+
+    def _on_dispatch_finished(self, report) -> None:
+        out_root = report.output_root
+        has_errors = bool(report.failed_count or report.errors)
+        if report.manifest_path is not None:
+            self.last_manifest_path = report.manifest_path
+            self.btn_undo_dispatch.setToolTip(str(report.manifest_path))
 
         msg = (
-            f"{'分拣完成' if report.failed_count == 0 else '部分文件分拣失败'}\n\n"
+            f"{'部分文件分拣失败' if has_errors else '分拣完成'}\n\n"
             f"• 总操作文件数: {report.total_actions} 个 (含全部伴侣文件)\n"
             f"• 成功完成: {report.successful_count} 个\n"
             f"• ⚡ 硬链接秒级完成 (0额外空间): {report.hardlink_count} 个\n"
@@ -820,10 +898,42 @@ class SorterWorkshopView(QWidget):
             f"• 失败数: {report.failed_count} 个\n\n"
             f"整理产物已保存在:\n{out_root.resolve()}"
         )
-        self._show_message("分拣完成" if report.failed_count == 0 else "部分文件分拣失败", msg)
+        if report.manifest_path is not None:
+            msg += f"\n\n撤销清单：\n{report.manifest_path}"
+        failures = [f"{r.source_path.name}：{r.error_message}" for r in report.results if not r.success]
+        if failures or report.errors:
+            msg += "\n\n失败详情：\n" + "\n".join([*failures, *report.errors])
+        self.lbl_status.setText("分拣已结束 · 可用撤销清单恢复" if report.manifest_path else "分拣未完成 · 未生成撤销清单")
+        self._show_message("部分文件分拣失败" if has_errors else "分拣完成", msg)
 
         if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(out_root.resolve()))):
             self.lbl_status.setText(f"分拣已结束，无法打开文件管理器，请手动查看：{out_root.resolve()}")
+
+    def _on_open_undo_manifest(self) -> None:
+        filename, _ = QFileDialog.getOpenFileName(self, "选择分拣撤销清单", "", "Photoye 撤销清单 (photoye_run_*.undo.json)")
+        if filename:
+            self._confirm_undo(Path(filename))
+
+    def _on_undo_dispatch(self) -> None:
+        if self.last_manifest_path is not None:
+            self._confirm_undo(self.last_manifest_path)
+
+    def _confirm_undo(self, manifest: Path) -> None:
+        if self._show_message("撤销这次分拣？", f"将校验并移除本次新建的分拣产物；源照片和已有文件不动。\n全部撤销成功后会删除本次清单；未完成则保留以便重试。\n若产物已被修改或替换，将停止撤销。\n请勿在撤销期间编辑输出文件。\n\n清单：{manifest}", confirm=True, confirm_text="确认撤销"):
+            self._start_file_task(lambda: undo_transaction(manifest), lambda report: self._on_undo_finished(report, manifest), "正在校验文件并撤销分拣…")
+
+    def _on_undo_finished(self, report, manifest: Path) -> None:
+        title = "撤销完成" if report.completed else "撤销已停止"
+        if report.completed and self.last_manifest_path is not None and self.last_manifest_path.absolute() == manifest.absolute():
+            self.last_manifest_path = None
+            self.btn_undo_dispatch.setToolTip("")
+            self.btn_undo_dispatch.setEnabled(False)
+        cleanup_message = "撤销清单已清理。" if report.completed else "撤销未完成，清单保留以便重试。"
+        content = f"已移除：{report.removed_count} 个\n已不存在：{report.missing_count} 个\n失败：{report.failed_count} 项\n源照片未删除，{cleanup_message}"
+        if report.errors:
+            content += "\n\n" + "\n".join(report.errors)
+        self.lbl_status.setText(title)
+        self._show_message(title, content)
 
     def _on_photo_item_double_clicked(self, item: QListWidgetItem) -> None:
         """双击左侧照片弹出高清大图检视窗"""
